@@ -45,6 +45,8 @@ import { deliverOutboundPayloads } from "../infra/outbound/deliver.js";
 import { resolveMessageProviderSelection } from "../infra/outbound/provider-selection.js";
 import { resolveOutboundTarget, type OutboundProvider } from "../infra/outbound/targets.js";
 import { normalizeProviderId } from "../providers/plugins/index.js";
+import type { ProviderId } from "../providers/plugins/types.js";
+import { DEFAULT_CHAT_PROVIDER } from "../providers/registry.js";
 import { normalizeMessageProvider } from "../utils/message-provider.js";
 import { truncateUtf16Safe } from "../utils.js";
 import type { CronJob } from "./types.js";
@@ -104,15 +106,7 @@ function isHeartbeatOnlyResponse(
 async function resolveDeliveryTarget(
   cfg: ClawdbotConfig,
   jobPayload: {
-    provider?:
-      | "last"
-      | "whatsapp"
-      | "telegram"
-      | "discord"
-      | "slack"
-      | "signal"
-      | "imessage"
-      | "msteams";
+    provider?: "last" | ProviderId;
     to?: string;
   },
 ): Promise<{
@@ -154,7 +148,7 @@ async function resolveDeliveryTarget(
       const selection = await resolveMessageProviderSelection({ cfg });
       provider = selection.provider;
     } catch {
-      provider = lastProvider ?? "whatsapp";
+      provider = lastProvider ?? DEFAULT_CHAT_PROVIDER;
     }
   }
 
