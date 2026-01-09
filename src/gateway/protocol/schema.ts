@@ -1,5 +1,5 @@
 import { type Static, type TSchema, Type } from "@sinclair/typebox";
-import { listProviderPlugins } from "../../providers/plugins/index.js";
+import { PROVIDER_IDS } from "../../providers/registry.js";
 import { SESSION_LABEL_MAX_LENGTH } from "../../sessions/session-label.js";
 import { GATEWAY_AGENT_PROVIDER_VALUES } from "../../utils/message-provider.js";
 
@@ -733,7 +733,7 @@ export const CronPayloadSchema = Type.Union([
       provider: Type.Optional(
         Type.Union([
           Type.Literal("last"),
-          ...listProviderPlugins().map((plugin) => Type.Literal(plugin.id)),
+          ...PROVIDER_IDS.map((provider) => Type.Literal(provider)),
         ]),
       ),
       to: Type.Optional(Type.String()),
