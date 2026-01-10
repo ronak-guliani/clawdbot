@@ -48,6 +48,7 @@ import {
 import { pickPrimaryTailnetIPv4 } from "../infra/tailnet.js";
 import { getResolvedLoggerSettings } from "../logging.js";
 import { defaultRuntime } from "../runtime.js";
+import { formatDocsLink } from "../terminal/links.js";
 import { colorize, isRich, theme } from "../terminal/theme.js";
 import {
   GATEWAY_CLIENT_MODES,
@@ -1024,8 +1025,14 @@ export async function runDaemonRestart() {
 export function registerDaemonCli(program: Command) {
   const daemon = program
     .command("daemon")
-    .description(
-      "Manage the Gateway daemon service (launchd/systemd/schtasks)",
+    .description("Manage the Gateway daemon service (launchd/systemd/schtasks)")
+    .addHelpText(
+      "after",
+      () =>
+        `\n${theme.muted("Docs:")} ${formatDocsLink(
+          "/gateway",
+          "docs.clawd.bot/gateway",
+        )}\n`,
     );
 
   daemon

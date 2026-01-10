@@ -42,6 +42,7 @@ import {
   setConsoleSubsystemFilter,
 } from "../logging.js";
 import { defaultRuntime } from "../runtime.js";
+import { formatDocsLink } from "../terminal/links.js";
 import { colorize, isRich, theme } from "../terminal/theme.js";
 import {
   GATEWAY_CLIENT_MODES,
@@ -873,7 +874,17 @@ function addGatewayRunCommand(
 
 export function registerGatewayCli(program: Command) {
   const gateway = addGatewayRunCommand(
-    program.command("gateway").description("Run the WebSocket Gateway"),
+    program
+      .command("gateway")
+      .description("Run the WebSocket Gateway")
+      .addHelpText(
+        "after",
+        () =>
+          `\n${theme.muted("Docs:")} ${formatDocsLink(
+            "/gateway",
+            "docs.clawd.bot/gateway",
+          )}\n`,
+      ),
   );
 
   // Back-compat: legacy launchd plists used gateway-daemon; keep hidden alias.
