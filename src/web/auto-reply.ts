@@ -767,7 +767,13 @@ export async function monitorWebProvider(
     DEFAULT_GROUP_HISTORY_LIMIT;
   const groupHistories = new Map<
     string,
-    Array<{ sender: string; body: string; timestamp?: number }>
+    Array<{
+      sender: string;
+      body: string;
+      timestamp?: number;
+      id?: string;
+      senderJid?: string;
+    }>
   >();
   const groupMemberNames = new Map<string, Map<string, string>>();
   const sleep =
@@ -1045,6 +1051,8 @@ export async function monitorWebProvider(
           sender: string;
           body: string;
           timestamp?: number;
+          id?: string;
+          senderJid?: string;
         }>;
         suppressGroupHistoryClear?: boolean;
       },
@@ -1064,14 +1072,17 @@ export async function monitorWebProvider(
         if (historyWithoutCurrent.length > 0) {
           const lineBreak = "\\n";
           const historyText = historyWithoutCurrent
-            .map((m) =>
-              formatAgentEnvelope({
+            .map((m) => {
+              const bodyWithId = m.id
+                ? `${m.body}\n[message_id: ${m.id}]`
+                : m.body;
+              return formatAgentEnvelope({
                 provider: "WhatsApp",
                 from: conversationId,
                 timestamp: m.timestamp,
-                body: `${m.sender}: ${m.body}`,
-              }),
-            )
+                body: `${m.sender}: ${bodyWithId}`,
+              });
+            })
             .join(lineBreak);
           combinedBody = buildHistoryContext({
             historyText,
@@ -1495,11 +1506,19 @@ export async function monitorWebProvider(
                 sender: string;
                 body: string;
                 timestamp?: number;
+                id?: string;
+                senderJid?: string;
               }>);
+            const sender =
+              msg.senderName && msg.senderE164
+                ? `${msg.senderName} (${msg.senderE164})`
+                : (msg.senderName ?? msg.senderE164 ?? "Unknown");
             history.push({
-              sender: msg.senderName ?? msg.senderE164 ?? "Unknown",
+              sender,
               body: msg.body,
               timestamp: msg.timestamp,
+              id: msg.id,
+              senderJid: msg.senderJid,
             });
             while (history.length > groupHistoryLimit) history.shift();
             groupHistories.set(groupHistoryKey, history);
