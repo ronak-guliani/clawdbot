@@ -480,6 +480,10 @@ type EmbeddedSandboxInfo = {
   agentWorkspaceMount?: string;
   browserControlUrl?: string;
   browserNoVncUrl?: string;
+  elevated?: {
+    allowed: boolean;
+    defaultLevel: "on" | "off";
+  };
 };
 
 function resolveSessionLane(key: string) {
@@ -553,8 +557,10 @@ function describeUnknownError(error: unknown): string {
 
 export function buildEmbeddedSandboxInfo(
   sandbox?: Awaited<ReturnType<typeof resolveSandboxContext>>,
+  bashElevated?: BashElevatedDefaults,
 ): EmbeddedSandboxInfo | undefined {
   if (!sandbox?.enabled) return undefined;
+  const elevatedAllowed = Boolean(bashElevated?.enabled && bashElevated.allowed);
   return {
     enabled: true,
     workspaceDir: sandbox.workspaceDir,
@@ -563,6 +569,14 @@ export function buildEmbeddedSandboxInfo(
       sandbox.workspaceAccess === "ro" ? "/agent" : undefined,
     browserControlUrl: sandbox.browser?.controlUrl,
     browserNoVncUrl: sandbox.browser?.noVncUrl,
+    ...(elevatedAllowed
+      ? {
+          elevated: {
+            allowed: true,
+            defaultLevel: bashElevated?.defaultLevel ?? "off",
+          },
+        }
+      : {}),
   };
 }
 
@@ -889,7 +903,10 @@ export async function compactEmbeddedPiSession(params: {
           provider: runtimeProvider,
           capabilities: runtimeCapabilities,
         };
-        const sandboxInfo = buildEmbeddedSandboxInfo(sandbox);
+        const sandboxInfo = buildEmbeddedSandboxInfo(
+          sandbox,
+          params.bashElevated,
+        );
         const reasoningTagHint = provider === "ollama";
         const userTimezone = resolveUserTimezone(
           params.config?.agents?.defaults?.userTimezone,
@@ -1266,7 +1283,10 @@ export async function runEmbeddedPiAgent(params: {
             node: process.version,
             model: `${provider}/${modelId}`,
           };
-          const sandboxInfo = buildEmbeddedSandboxInfo(sandbox);
+          const sandboxInfo = buildEmbeddedSandboxInfo(
+            sandbox,
+            params.bashElevated,
+          );
           const reasoningTagHint = provider === "ollama";
           const userTimezone = resolveUserTimezone(
             params.config?.agents?.defaults?.userTimezone,
