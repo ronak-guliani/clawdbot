@@ -150,7 +150,7 @@ function resolveElevatedAllowList(
   fallbackAllowFrom?: Array<string | number>,
 ): Array<string | number> | undefined {
   if (!allowFrom) return fallbackAllowFrom;
-  const value = allowFrom[provider as keyof AgentElevatedAllowFromConfig];
+  const value = allowFrom[provider];
   return Array.isArray(value) ? value : fallbackAllowFrom;
 }
 
@@ -239,17 +239,13 @@ function resolveElevatedPermissions(params: {
   }
 
   const normalizedProvider = normalizeProviderId(params.provider);
-  const discordFallback =
-    params.provider === "discord"
-      ? params.cfg.discord?.dm?.allowFrom
-      : undefined;
   const pluginFallbackAllowFrom = normalizedProvider
     ? getProviderPlugin(normalizedProvider)?.elevated?.allowFromFallback?.({
         cfg: params.cfg,
         accountId: params.ctx.AccountId,
       })
     : undefined;
-  const fallbackAllowFrom = pluginFallbackAllowFrom ?? discordFallback;
+  const fallbackAllowFrom = pluginFallbackAllowFrom;
   const globalAllowed = isApprovedElevatedSender({
     provider: params.provider,
     ctx: params.ctx,
@@ -259,10 +255,7 @@ function resolveElevatedPermissions(params: {
   if (!globalAllowed) {
     failures.push({
       gate: "allowFrom",
-      key:
-        params.provider === "discord" && discordFallback
-          ? "tools.elevated.allowFrom.discord (or discord.dm.allowFrom fallback)"
-          : `tools.elevated.allowFrom.${params.provider}`,
+      key: `tools.elevated.allowFrom.${params.provider}`,
     });
     return { enabled, allowed: false, failures };
   }
