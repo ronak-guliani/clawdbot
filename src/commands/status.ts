@@ -26,11 +26,16 @@ import {
   loadProviderUsageSummary,
 } from "../infra/provider-usage.js";
 import { peekSystemEvents } from "../infra/system-events.js";
-import { getProviderPlugin } from "../providers/plugins/index.js";
-import type { ProviderAccountSnapshot } from "../providers/plugins/types.js";
+import { listProviderPlugins } from "../providers/plugins/index.js";
+import type {
+  ProviderAccountSnapshot,
+  ProviderId,
+  ProviderPlugin,
+} from "../providers/plugins/types.js";
+import { DEFAULT_ACCOUNT_ID } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { resolveHeartbeatSeconds } from "../web/reconnect.js";
-import type { HealthSummary } from "./health.js";
+import { formatHealthProviderLines, type HealthSummary } from "./health.js";
 import { resolveControlUiLinks } from "./onboard-helpers.js";
 
 export type SessionStatus = {
@@ -56,7 +61,12 @@ export type SessionStatus = {
 };
 
 export type StatusSummary = {
-  web: { linked: boolean; authAgeMs: number | null };
+  linkProvider?: {
+    id: ProviderId;
+    label: string;
+    linked: boolean;
+    authAgeMs: number | null;
+  };
   heartbeatSeconds: number;
   providerSummary: string[];
   queuedSystemEvents: string[];
@@ -68,61 +78,63 @@ export type StatusSummary = {
   };
 };
 
-type WebStatusContext = {
+type LinkProviderContext = {
   linked: boolean;
   authAgeMs: number | null;
   account?: unknown;
   accountId?: string;
-  plugin?: ReturnType<typeof getProviderPlugin>;
+  plugin: ProviderPlugin;
 };
 
-async function resolveWebStatusContext(
+async function resolveLinkProviderContext(
   cfg: ClawdbotConfig,
-): Promise<WebStatusContext> {
-  const plugin = getProviderPlugin("whatsapp");
-  if (!plugin) {
-    return { linked: false, authAgeMs: null };
+): Promise<LinkProviderContext | null> {
+  for (const plugin of listProviderPlugins()) {
+    const accountIds = plugin.config.listAccountIds(cfg);
+    const defaultAccountId =
+      plugin.config.defaultAccountId?.(cfg) ??
+      accountIds[0] ??
+      DEFAULT_ACCOUNT_ID;
+    const account = plugin.config.resolveAccount(cfg, defaultAccountId);
+    const enabled = plugin.config.isEnabled
+      ? plugin.config.isEnabled(account, cfg)
+      : true;
+    const configured = plugin.config.isConfigured
+      ? await plugin.config.isConfigured(account, cfg)
+      : true;
+    const snapshot = plugin.config.describeAccount
+      ? plugin.config.describeAccount(account, cfg)
+      : ({
+          accountId: defaultAccountId,
+          enabled,
+          configured,
+        } as ProviderAccountSnapshot);
+    const summary = plugin.status?.buildProviderSummary
+      ? await plugin.status.buildProviderSummary({
+          account,
+          cfg,
+          defaultAccountId,
+          snapshot,
+        })
+      : undefined;
+    const summaryRecord = summary as Record<string, unknown> | undefined;
+    const linked =
+      summaryRecord && typeof summaryRecord.linked === "boolean"
+        ? summaryRecord.linked
+        : null;
+    if (linked === null) continue;
+    const authAgeMs =
+      summaryRecord && typeof summaryRecord.authAgeMs === "number"
+        ? summaryRecord.authAgeMs
+        : null;
+    return { linked, authAgeMs, account, accountId: defaultAccountId, plugin };
   }
-  const accountIds = plugin.config.listAccountIds(cfg);
-  const defaultAccountId =
-    plugin.config.defaultAccountId?.(cfg) ?? accountIds[0] ?? "default";
-  const account = plugin.config.resolveAccount(cfg, defaultAccountId);
-  const enabled = plugin.config.isEnabled
-    ? plugin.config.isEnabled(account, cfg)
-    : true;
-  const configured = plugin.config.isConfigured
-    ? await plugin.config.isConfigured(account, cfg)
-    : true;
-  const snapshot = plugin.config.describeAccount
-    ? plugin.config.describeAccount(account, cfg)
-    : ({
-        accountId: defaultAccountId,
-        enabled,
-        configured,
-      } as ProviderAccountSnapshot);
-  const summary = plugin.status?.buildProviderSummary
-    ? await plugin.status.buildProviderSummary({
-        account,
-        cfg,
-        defaultAccountId,
-        snapshot,
-      })
-    : undefined;
-  const summaryRecord = summary as Record<string, unknown> | undefined;
-  const linked =
-    summaryRecord && typeof summaryRecord.linked === "boolean"
-      ? summaryRecord.linked
-      : configured && enabled;
-  const authAgeMs =
-    summaryRecord && typeof summaryRecord.authAgeMs === "number"
-      ? summaryRecord.authAgeMs
-      : null;
-  return { linked, authAgeMs, account, accountId: defaultAccountId, plugin };
+  return null;
 }
 
 export async function getStatusSummary(): Promise<StatusSummary> {
   const cfg = loadConfig();
-  const webContext = await resolveWebStatusContext(cfg);
+  const linkContext = await resolveLinkProviderContext(cfg);
   const heartbeatSeconds = resolveHeartbeatSeconds(cfg, undefined);
   const providerSummary = await buildProviderSummary(cfg, {
     colorize: true,
@@ -192,7 +204,14 @@ export async function getStatusSummary(): Promise<StatusSummary> {
   const recent = sessions.slice(0, 5);
 
   return {
-    web: { linked: webContext.linked, authAgeMs: webContext.authAgeMs },
+    linkProvider: linkContext
+      ? {
+          id: linkContext.plugin.id,
+          label: linkContext.plugin.meta.label ?? "Provider",
+          linked: linkContext.linked,
+          authAgeMs: linkContext.authAgeMs,
+        }
+      : undefined,
     heartbeatSeconds,
     providerSummary,
     queuedSystemEvents,
@@ -376,19 +395,23 @@ export async function statusCommand(
     });
     runtime.log(info(`Dashboard: ${links.httpUrl}`));
   }
-  runtime.log(
-    `Web session: ${summary.web.linked ? "linked" : "not linked"}${summary.web.linked ? ` (last refreshed ${formatAge(summary.web.authAgeMs)})` : ""}`,
-  );
-  if (summary.web.linked) {
-    const webContext = await resolveWebStatusContext(cfg);
-    if (webContext.linked && webContext.plugin?.status?.logSelfId) {
-      webContext.plugin.status.logSelfId({
-        account: webContext.account ?? {},
-        cfg,
-        runtime,
-        includeProviderPrefix: true,
-      });
+  if (summary.linkProvider) {
+    runtime.log(
+      `Link provider: ${summary.linkProvider.label} ${summary.linkProvider.linked ? "linked" : "not linked"}${summary.linkProvider.linked ? ` (last refreshed ${formatAge(summary.linkProvider.authAgeMs)})` : ""}`,
+    );
+    if (summary.linkProvider.linked) {
+      const linkContext = await resolveLinkProviderContext(cfg);
+      if (linkContext?.linked && linkContext.plugin?.status?.logSelfId) {
+        linkContext.plugin.status.logSelfId({
+          account: linkContext.account ?? {},
+          cfg,
+          runtime,
+          includeProviderPrefix: true,
+        });
+      }
     }
+  } else {
+    runtime.log("Link provider: unknown");
   }
   runtime.log("");
   runtime.log(info("System:"));
@@ -402,27 +425,9 @@ export async function statusCommand(
   runtime.log("");
   if (health) {
     runtime.log(info("Gateway health: reachable"));
-
-    const tgLine = health.telegram.configured
-      ? health.telegram.probe?.ok
-        ? info(
-            `Telegram: ok${health.telegram.probe.bot?.username ? ` (@${health.telegram.probe.bot.username})` : ""} (${health.telegram.probe.elapsedMs}ms)` +
-              (health.telegram.probe.webhook?.url
-                ? ` - webhook ${health.telegram.probe.webhook.url}`
-                : ""),
-          )
-        : `Telegram: failed (${health.telegram.probe?.status ?? "unknown"})${health.telegram.probe?.error ? ` - ${health.telegram.probe.error}` : ""}`
-      : info("Telegram: not configured");
-    runtime.log(tgLine);
-
-    const discordLine = health.discord.configured
-      ? health.discord.probe?.ok
-        ? info(
-            `Discord: ok${health.discord.probe.bot?.username ? ` (@${health.discord.probe.bot.username})` : ""} (${health.discord.probe.elapsedMs}ms)`,
-          )
-        : `Discord: failed (${health.discord.probe?.status ?? "unknown"})${health.discord.probe?.error ? ` - ${health.discord.probe.error}` : ""}`
-      : info("Discord: not configured");
-    runtime.log(discordLine);
+    for (const line of formatHealthProviderLines(health)) {
+      runtime.log(line);
+    }
   } else {
     runtime.log(info("Provider probes: skipped (use --deep)"));
   }

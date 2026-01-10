@@ -62,7 +62,7 @@ describe("statusCommand", () => {
   it("prints JSON when requested", async () => {
     await statusCommand({ json: true }, runtime as never);
     const payload = JSON.parse((runtime.log as vi.Mock).mock.calls[0][0]);
-    expect(payload.web.linked).toBe(true);
+    expect(payload.linkProvider.linked).toBe(true);
     expect(payload.sessions.count).toBe(1);
     expect(payload.sessions.path).toBe("/tmp/sessions.json");
     expect(payload.sessions.defaults.model).toBeTruthy();
@@ -76,7 +76,7 @@ describe("statusCommand", () => {
     (runtime.log as vi.Mock).mockClear();
     await statusCommand({}, runtime as never);
     const logs = (runtime.log as vi.Mock).mock.calls.map((c) => String(c[0]));
-    expect(logs.some((l) => l.includes("Web session"))).toBe(true);
+    expect(logs.some((l) => l.includes("Link provider"))).toBe(true);
     expect(logs.some((l) => l.includes("Active sessions"))).toBe(true);
     expect(logs.some((l) => l.includes("Default model"))).toBe(true);
     expect(logs.some((l) => l.includes("tokens:"))).toBe(true);
