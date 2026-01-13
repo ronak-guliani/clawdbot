@@ -24,6 +24,38 @@ describe("normalizeCronJobCreate", () => {
     expect("channel" in payload).toBe(false);
   });
 
+  it("normalizes agentId and drops null", () => {
+    const normalized = normalizeCronJobCreate({
+      name: "agent-set",
+      enabled: true,
+      schedule: { kind: "cron", expr: "* * * * *" },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      agentId: " Ops ",
+      payload: {
+        kind: "agentTurn",
+        message: "hi",
+      },
+    }) as unknown as Record<string, unknown>;
+
+    expect(normalized.agentId).toBe("Ops");
+
+    const cleared = normalizeCronJobCreate({
+      name: "agent-clear",
+      enabled: true,
+      schedule: { kind: "cron", expr: "* * * * *" },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      agentId: null,
+      payload: {
+        kind: "agentTurn",
+        message: "hi",
+      },
+    }) as unknown as Record<string, unknown>;
+
+    expect(cleared.agentId).toBeNull();
+  });
+
   it("canonicalizes payload.provider casing", () => {
     const normalized = normalizeCronJobCreate({
       name: "legacy provider",
@@ -42,5 +74,41 @@ describe("normalizeCronJobCreate", () => {
 
     const payload = normalized.payload as Record<string, unknown>;
     expect(payload.provider).toBe("telegram");
+  });
+
+  it("coerces ISO schedule.at to atMs (UTC)", () => {
+    const normalized = normalizeCronJobCreate({
+      name: "iso at",
+      enabled: true,
+      schedule: { at: "2026-01-12T18:00:00" },
+      sessionTarget: "main",
+      wakeMode: "next-heartbeat",
+      payload: {
+        kind: "systemEvent",
+        text: "hi",
+      },
+    }) as unknown as Record<string, unknown>;
+
+    const schedule = normalized.schedule as Record<string, unknown>;
+    expect(schedule.kind).toBe("at");
+    expect(schedule.atMs).toBe(Date.parse("2026-01-12T18:00:00Z"));
+  });
+
+  it("coerces ISO schedule.atMs string to atMs (UTC)", () => {
+    const normalized = normalizeCronJobCreate({
+      name: "iso atMs",
+      enabled: true,
+      schedule: { kind: "at", atMs: "2026-01-12T18:00:00" },
+      sessionTarget: "main",
+      wakeMode: "next-heartbeat",
+      payload: {
+        kind: "systemEvent",
+        text: "hi",
+      },
+    }) as unknown as Record<string, unknown>;
+
+    const schedule = normalized.schedule as Record<string, unknown>;
+    expect(schedule.kind).toBe("at");
+    expect(schedule.atMs).toBe(Date.parse("2026-01-12T18:00:00Z"));
   });
 });

@@ -1,10 +1,11 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-
+import type { AgentTool } from "@mariozechner/pi-agent-core";
 import sharp from "sharp";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ClawdbotConfig } from "../config/config.js";
+import { createClawdbotTools } from "./clawdbot-tools.js";
 import { __testing, createClawdbotCodingTools } from "./pi-tools.js";
 import { createBrowserTool } from "./tools/browser-tool.js";
 
@@ -16,7 +17,7 @@ describe("createClawdbotCodingTools", () => {
     expect(schema.anyOf).toBeUndefined();
   });
 
-  it("merges properties for union tool schemas", () => {
+  it("keeps browser tool schema properties after normalization", () => {
     const tools = createClawdbotCodingTools();
     const browser = tools.find((tool) => tool.name === "browser");
     expect(browser).toBeDefined();
@@ -101,6 +102,31 @@ describe("createClawdbotCodingTools", () => {
       type: "string",
       enum: ["a", "b"],
     });
+  });
+
+  it("drops null-only union variants without flattening other unions", () => {
+    const cleaned = __testing.cleanToolSchemaForGemini({
+      type: "object",
+      properties: {
+        parentId: { anyOf: [{ type: "string" }, { type: "null" }] },
+        count: { oneOf: [{ type: "string" }, { type: "number" }] },
+      },
+    }) as {
+      properties?: Record<string, unknown>;
+    };
+
+    const parentId = cleaned.properties?.parentId as
+      | { type?: unknown; anyOf?: unknown; oneOf?: unknown }
+      | undefined;
+    expect(parentId?.anyOf).toBeUndefined();
+    expect(parentId?.oneOf).toBeUndefined();
+    expect(parentId?.type).toBe("string");
+
+    const count = cleaned.properties?.count as
+      | { type?: unknown; anyOf?: unknown; oneOf?: unknown }
+      | undefined;
+    expect(count?.anyOf).toBeUndefined();
+    expect(Array.isArray(count?.oneOf)).toBe(true);
   });
 
   it("preserves action enums in normalized schemas", () => {
@@ -241,6 +267,95 @@ describe("createClawdbotCodingTools", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("avoids anyOf/oneOf/allOf in tool schemas", () => {
+    const tools = createClawdbotCodingTools();
+    const offenders: Array<{
+      name: string;
+      keyword: string;
+      path: string;
+    }> = [];
+    const keywords = new Set(["anyOf", "oneOf", "allOf"]);
+
+    const walk = (value: unknown, path: string, name: string): void => {
+      if (!value) return;
+      if (Array.isArray(value)) {
+        for (const [index, entry] of value.entries()) {
+          walk(entry, `${path}[${index}]`, name);
+        }
+        return;
+      }
+      if (typeof value !== "object") return;
+
+      const record = value as Record<string, unknown>;
+      for (const [key, entry] of Object.entries(record)) {
+        const nextPath = path ? `${path}.${key}` : key;
+        if (keywords.has(key)) {
+          offenders.push({ name, keyword: key, path: nextPath });
+        }
+        walk(entry, nextPath, name);
+      }
+    };
+
+    for (const tool of tools) {
+      walk(tool.parameters, "", tool.name);
+    }
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps raw core tool schemas union-free", () => {
+    const tools = createClawdbotTools();
+    const coreTools = new Set([
+      "browser",
+      "canvas",
+      "nodes",
+      "cron",
+      "message",
+      "gateway",
+      "agents_list",
+      "sessions_list",
+      "sessions_history",
+      "sessions_send",
+      "sessions_spawn",
+      "session_status",
+      "memory_search",
+      "memory_get",
+      "image",
+    ]);
+    const offenders: Array<{
+      name: string;
+      keyword: string;
+      path: string;
+    }> = [];
+    const keywords = new Set(["anyOf", "oneOf", "allOf"]);
+
+    const walk = (value: unknown, path: string, name: string): void => {
+      if (!value) return;
+      if (Array.isArray(value)) {
+        for (const [index, entry] of value.entries()) {
+          walk(entry, `${path}[${index}]`, name);
+        }
+        return;
+      }
+      if (typeof value !== "object") return;
+      const record = value as Record<string, unknown>;
+      for (const [key, entry] of Object.entries(record)) {
+        const nextPath = path ? `${path}.${key}` : key;
+        if (keywords.has(key)) {
+          offenders.push({ name, keyword: key, path: nextPath });
+        }
+        walk(entry, nextPath, name);
+      }
+    };
+
+    for (const tool of tools) {
+      if (!coreTools.has(tool.name)) continue;
+      walk(tool.parameters, "", tool.name);
+    }
+
+    expect(offenders).toEqual([]);
+  });
+
   it("does not expose provider-specific message tools", () => {
     const tools = createClawdbotCodingTools({ messageProvider: "discord" });
     const names = new Set(tools.map((tool) => tool.name));
@@ -355,6 +470,71 @@ describe("createClawdbotCodingTools", () => {
     }
   });
 
+  describe("Claude/Gemini alias support", () => {
+    it("adds Claude-style aliases to schemas without dropping metadata", () => {
+      const base: AgentTool = {
+        name: "write",
+        description: "test",
+        parameters: {
+          type: "object",
+          required: ["path", "content"],
+          properties: {
+            path: { type: "string", description: "Path" },
+            content: { type: "string", description: "Body" },
+          },
+        },
+        execute: vi.fn(),
+      };
+
+      const patched = __testing.patchToolSchemaForClaudeCompatibility(base);
+      const params = patched.parameters as {
+        properties?: Record<string, unknown>;
+        required?: string[];
+      };
+      const props = params.properties ?? {};
+
+      expect(props.file_path).toEqual(props.path);
+      expect(params.required ?? []).not.toContain("path");
+      expect(params.required ?? []).not.toContain("file_path");
+    });
+
+    it("normalizes file_path to path and enforces required groups at runtime", async () => {
+      const execute = vi.fn(async (_id, args) => args);
+      const tool: AgentTool = {
+        name: "write",
+        description: "test",
+        parameters: {
+          type: "object",
+          required: ["path", "content"],
+          properties: {
+            path: { type: "string" },
+            content: { type: "string" },
+          },
+        },
+        execute,
+      };
+
+      const wrapped = __testing.wrapToolParamNormalization(tool, [
+        { keys: ["path", "file_path"] },
+      ]);
+
+      await wrapped.execute("tool-1", { file_path: "foo.txt", content: "x" });
+      expect(execute).toHaveBeenCalledWith(
+        "tool-1",
+        { path: "foo.txt", content: "x" },
+        undefined,
+        undefined,
+      );
+
+      await expect(wrapped.execute("tool-2", { content: "x" })).rejects.toThrow(
+        /Missing required parameter/,
+      );
+      await expect(
+        wrapped.execute("tool-3", { file_path: "   ", content: "x" }),
+      ).rejects.toThrow(/Missing required parameter/);
+    });
+  });
+
   it("filters tools by sandbox policy", () => {
     const sandbox = {
       enabled: true,
@@ -425,6 +605,57 @@ describe("createClawdbotCodingTools", () => {
     });
     expect(tools.some((tool) => tool.name === "exec")).toBe(true);
     expect(tools.some((tool) => tool.name === "browser")).toBe(false);
+  });
+
+  it("applies tool profiles before allow/deny policies", () => {
+    const tools = createClawdbotCodingTools({
+      config: { tools: { profile: "messaging" } },
+    });
+    const names = new Set(tools.map((tool) => tool.name));
+    expect(names.has("message")).toBe(true);
+    expect(names.has("sessions_send")).toBe(true);
+    expect(names.has("sessions_spawn")).toBe(false);
+    expect(names.has("exec")).toBe(false);
+    expect(names.has("browser")).toBe(false);
+  });
+
+  it("expands group shorthands in global tool policy", () => {
+    const tools = createClawdbotCodingTools({
+      config: { tools: { allow: ["group:fs"] } },
+    });
+    const names = new Set(tools.map((tool) => tool.name));
+    expect(names.has("read")).toBe(true);
+    expect(names.has("write")).toBe(true);
+    expect(names.has("edit")).toBe(true);
+    expect(names.has("exec")).toBe(false);
+    expect(names.has("browser")).toBe(false);
+  });
+
+  it("expands group shorthands in global tool deny policy", () => {
+    const tools = createClawdbotCodingTools({
+      config: { tools: { deny: ["group:fs"] } },
+    });
+    const names = new Set(tools.map((tool) => tool.name));
+    expect(names.has("read")).toBe(false);
+    expect(names.has("write")).toBe(false);
+    expect(names.has("edit")).toBe(false);
+    expect(names.has("exec")).toBe(true);
+  });
+
+  it("lets agent profiles override global profiles", () => {
+    const tools = createClawdbotCodingTools({
+      sessionKey: "agent:work:main",
+      config: {
+        tools: { profile: "coding" },
+        agents: {
+          list: [{ id: "work", tools: { profile: "messaging" } }],
+        },
+      },
+    });
+    const names = new Set(tools.map((tool) => tool.name));
+    expect(names.has("message")).toBe(true);
+    expect(names.has("exec")).toBe(false);
+    expect(names.has("read")).toBe(false);
   });
 
   it("removes unsupported JSON Schema keywords for Cloud Code Assist API compatibility", () => {
@@ -679,6 +910,89 @@ describe("createClawdbotCodingTools", () => {
       expect(edited).toBe(expectedContent);
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts Claude Code parameter aliases for read/write/edit", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-alias-"));
+    try {
+      const tools = createClawdbotCodingTools({ workspaceDir: tmpDir });
+      const readTool = tools.find((tool) => tool.name === "read");
+      const writeTool = tools.find((tool) => tool.name === "write");
+      const editTool = tools.find((tool) => tool.name === "edit");
+      expect(readTool).toBeDefined();
+      expect(writeTool).toBeDefined();
+      expect(editTool).toBeDefined();
+
+      const filePath = "alias-test.txt";
+      await writeTool?.execute("tool-alias-1", {
+        file_path: filePath,
+        content: "hello world",
+      });
+
+      await editTool?.execute("tool-alias-2", {
+        file_path: filePath,
+        old_string: "world",
+        new_string: "universe",
+      });
+
+      const result = await readTool?.execute("tool-alias-3", {
+        file_path: filePath,
+      });
+
+      const textBlocks = result?.content?.filter(
+        (block) => block.type === "text",
+      ) as Array<{ text?: string }> | undefined;
+      const combinedText = textBlocks
+        ?.map((block) => block.text ?? "")
+        .join("\n");
+      expect(combinedText).toContain("hello universe");
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies sandbox path guards to file_path alias", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-sbx-"));
+    const outsidePath = path.join(os.tmpdir(), "clawdbot-outside.txt");
+    await fs.writeFile(outsidePath, "outside", "utf8");
+    try {
+      const sandbox = {
+        enabled: true,
+        sessionKey: "sandbox:test",
+        workspaceDir: tmpDir,
+        agentWorkspaceDir: path.join(os.tmpdir(), "clawdbot-workspace"),
+        workspaceAccess: "ro",
+        containerName: "clawdbot-sbx-test",
+        containerWorkdir: "/workspace",
+        docker: {
+          image: "clawdbot-sandbox:bookworm-slim",
+          containerPrefix: "clawdbot-sbx-",
+          workdir: "/workspace",
+          readOnlyRoot: true,
+          tmpfs: [],
+          network: "none",
+          user: "1000:1000",
+          capDrop: ["ALL"],
+          env: { LANG: "C.UTF-8" },
+        },
+        tools: {
+          allow: ["read"],
+          deny: [],
+        },
+        browserAllowHostControl: false,
+      };
+
+      const tools = createClawdbotCodingTools({ sandbox });
+      const readTool = tools.find((tool) => tool.name === "read");
+      expect(readTool).toBeDefined();
+
+      await expect(
+        readTool?.execute("tool-sbx-1", { file_path: outsidePath }),
+      ).rejects.toThrow();
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+      await fs.rm(outsidePath, { force: true });
     }
   });
 

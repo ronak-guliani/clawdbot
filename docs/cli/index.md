@@ -70,6 +70,10 @@ clawdbot [--dev] [--profile <name>] <command>
     enable
     disable
     doctor
+  memory
+    status
+    index
+    search
   message
   agent
   agents
@@ -188,6 +192,14 @@ Manage extensions and their config:
 
 Most plugin changes require a gateway restart. See [/plugin](/plugin).
 
+## Memory
+
+Vector search over `MEMORY.md` + `memory/*.md`:
+
+- `clawdbot memory status` — show index stats.
+- `clawdbot memory index` — reindex memory files.
+- `clawdbot memory search "<query>"` — semantic search over memory.
+
 ## Chat slash commands
 
 Chat messages support `/...` commands (text and native). See [/tools/slash-commands](/tools/slash-commands).
@@ -221,13 +233,15 @@ Options:
 - `--non-interactive`
 - `--mode <local|remote>`
 - `--flow <quickstart|advanced>`
-- `--auth-choice <setup-token|claude-cli|token|openai-codex|openai-api-key|codex-cli|antigravity|gemini-api-key|zai-api-key|apiKey|minimax-api|opencode-zen|skip>`
+- `--auth-choice <setup-token|claude-cli|token|openai-codex|openai-api-key|openrouter-api-key|moonshot-api-key|codex-cli|antigravity|gemini-api-key|zai-api-key|apiKey|minimax-api|opencode-zen|skip>`
 - `--token-provider <id>` (non-interactive; used with `--auth-choice token`)
 - `--token <token>` (non-interactive; used with `--auth-choice token`)
 - `--token-profile-id <id>` (non-interactive; default: `<provider>:manual`)
 - `--token-expires-in <duration>` (non-interactive; e.g. `365d`, `12h`)
 - `--anthropic-api-key <key>`
 - `--openai-api-key <key>`
+- `--openrouter-api-key <key>`
+- `--moonshot-api-key <key>`
 - `--gemini-api-key <key>`
 - `--zai-api-key <key>`
 - `--minimax-api-key <key>`
@@ -384,7 +398,7 @@ Required:
 Options:
 - `--to <dest>` (for session key and optional delivery)
 - `--session-id <id>`
-- `--thinking <off|minimal|low|medium|high>`
+- `--thinking <off|minimal|low|medium|high|xhigh>` (GPT-5.2 + Codex models only)
 - `--verbose <on|off>`
 - `--provider <whatsapp|telegram|discord|slack|signal|imessage>`
 - `--local`
@@ -744,7 +758,7 @@ Manage:
 
 Inspect:
 - `browser screenshot [targetId] [--full-page] [--ref <ref>] [--element <selector>] [--type png|jpeg]`
-- `browser snapshot [--format aria|ai] [--target-id <id>] [--limit <n>] [--out <path>]`
+- `browser snapshot [--format aria|ai] [--target-id <id>] [--limit <n>] [--interactive] [--compact] [--depth <n>] [--selector <sel>] [--out <path>]`
 
 Actions:
 - `browser navigate <url> [--target-id <id>]`

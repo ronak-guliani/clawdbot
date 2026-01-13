@@ -510,6 +510,58 @@ describe("config pruning defaults", () => {
   });
 });
 
+describe("config compaction settings", () => {
+  it("preserves memory flush config values", async () => {
+    await withTempHome(async (home) => {
+      const configDir = path.join(home, ".clawdbot");
+      await fs.mkdir(configDir, { recursive: true });
+      await fs.writeFile(
+        path.join(configDir, "clawdbot.json"),
+        JSON.stringify(
+          {
+            agents: {
+              defaults: {
+                compaction: {
+                  mode: "safeguard",
+                  reserveTokensFloor: 12_345,
+                  memoryFlush: {
+                    enabled: false,
+                    softThresholdTokens: 1234,
+                    prompt: "Write notes.",
+                    systemPrompt: "Flush memory now.",
+                  },
+                },
+              },
+            },
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
+
+      vi.resetModules();
+      const { loadConfig } = await import("./config.js");
+      const cfg = loadConfig();
+
+      expect(cfg.agents?.defaults?.compaction?.reserveTokensFloor).toBe(12_345);
+      expect(cfg.agents?.defaults?.compaction?.mode).toBe("safeguard");
+      expect(cfg.agents?.defaults?.compaction?.memoryFlush?.enabled).toBe(
+        false,
+      );
+      expect(
+        cfg.agents?.defaults?.compaction?.memoryFlush?.softThresholdTokens,
+      ).toBe(1234);
+      expect(cfg.agents?.defaults?.compaction?.memoryFlush?.prompt).toBe(
+        "Write notes.",
+      );
+      expect(cfg.agents?.defaults?.compaction?.memoryFlush?.systemPrompt).toBe(
+        "Flush memory now.",
+      );
+    });
+  });
+});
+
 describe("config discord", () => {
   let previousHome: string | undefined;
 
@@ -1197,6 +1249,23 @@ describe("legacy config detection", () => {
     expect((res.config?.gateway as { token?: string })?.token).toBeUndefined();
   });
 
+  it("migrates gateway.bind and bridge.bind from 'tailnet' to 'auto'", async () => {
+    vi.resetModules();
+    const { migrateLegacyConfig } = await import("./config.js");
+    const res = migrateLegacyConfig({
+      gateway: { bind: "tailnet" as const },
+      bridge: { bind: "tailnet" as const },
+    });
+    expect(res.changes).toContain(
+      "Migrated gateway.bind from 'tailnet' to 'auto'.",
+    );
+    expect(res.changes).toContain(
+      "Migrated bridge.bind from 'tailnet' to 'auto'.",
+    );
+    expect(res.config?.gateway?.bind).toBe("auto");
+    expect(res.config?.bridge?.bind).toBe("auto");
+  });
+
   it('rejects telegram.dmPolicy="open" without allowFrom "*"', async () => {
     vi.resetModules();
     const { validateConfigObject } = await import("./config.js");
@@ -1228,6 +1297,16 @@ describe("legacy config detection", () => {
     expect(res.ok).toBe(true);
     if (res.ok) {
       expect(res.config.telegram?.dmPolicy).toBe("pairing");
+    }
+  });
+
+  it("defaults telegram.groupPolicy to allowlist when telegram section exists", async () => {
+    vi.resetModules();
+    const { validateConfigObject } = await import("./config.js");
+    const res = validateConfigObject({ telegram: {} });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.config.telegram?.groupPolicy).toBe("allowlist");
     }
   });
 
@@ -1275,6 +1354,16 @@ describe("legacy config detection", () => {
     }
   });
 
+  it("defaults whatsapp.groupPolicy to allowlist when whatsapp section exists", async () => {
+    vi.resetModules();
+    const { validateConfigObject } = await import("./config.js");
+    const res = validateConfigObject({ whatsapp: {} });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.config.whatsapp?.groupPolicy).toBe("allowlist");
+    }
+  });
+
   it('rejects signal.dmPolicy="open" without allowFrom "*"', async () => {
     vi.resetModules();
     const { validateConfigObject } = await import("./config.js");
@@ -1306,6 +1395,16 @@ describe("legacy config detection", () => {
     expect(res.ok).toBe(true);
     if (res.ok) {
       expect(res.config.signal?.dmPolicy).toBe("pairing");
+    }
+  });
+
+  it("defaults signal.groupPolicy to allowlist when signal section exists", async () => {
+    vi.resetModules();
+    const { validateConfigObject } = await import("./config.js");
+    const res = validateConfigObject({ signal: {} });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.config.signal?.groupPolicy).toBe("allowlist");
     }
   });
 
@@ -1368,6 +1467,46 @@ describe("legacy config detection", () => {
     expect(res.ok).toBe(true);
     if (res.ok) {
       expect(res.config.imessage?.dmPolicy).toBe("pairing");
+    }
+  });
+
+  it("defaults imessage.groupPolicy to allowlist when imessage section exists", async () => {
+    vi.resetModules();
+    const { validateConfigObject } = await import("./config.js");
+    const res = validateConfigObject({ imessage: {} });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.config.imessage?.groupPolicy).toBe("allowlist");
+    }
+  });
+
+  it("defaults discord.groupPolicy to allowlist when discord section exists", async () => {
+    vi.resetModules();
+    const { validateConfigObject } = await import("./config.js");
+    const res = validateConfigObject({ discord: {} });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.config.discord?.groupPolicy).toBe("allowlist");
+    }
+  });
+
+  it("defaults slack.groupPolicy to allowlist when slack section exists", async () => {
+    vi.resetModules();
+    const { validateConfigObject } = await import("./config.js");
+    const res = validateConfigObject({ slack: {} });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.config.slack?.groupPolicy).toBe("allowlist");
+    }
+  });
+
+  it("defaults msteams.groupPolicy to allowlist when msteams section exists", async () => {
+    vi.resetModules();
+    const { validateConfigObject } = await import("./config.js");
+    const res = validateConfigObject({ msteams: {} });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.config.msteams?.groupPolicy).toBe("allowlist");
     }
   });
 
@@ -1562,6 +1701,49 @@ describe("multi-agent agentDir validation", () => {
       expect(() => loadConfig()).toThrow(/duplicate agentDir/i);
       expect(spy.mock.calls.flat().join(" ")).toMatch(/Duplicate agentDir/i);
       spy.mockRestore();
+    });
+  });
+});
+
+describe("config preservation on validation failure", () => {
+  it("preserves unknown fields via passthrough", async () => {
+    vi.resetModules();
+    const { validateConfigObject } = await import("./config.js");
+    const res = validateConfigObject({
+      agents: { list: [{ id: "pi" }] },
+      customUnknownField: { nested: "value" },
+    });
+    expect(res.ok).toBe(true);
+    expect(
+      (res as { config: Record<string, unknown> }).config.customUnknownField,
+    ).toEqual({
+      nested: "value",
+    });
+  });
+
+  it("preserves config data when validation fails", async () => {
+    await withTempHome(async (home) => {
+      const configDir = path.join(home, ".clawdbot");
+      await fs.mkdir(configDir, { recursive: true });
+      await fs.writeFile(
+        path.join(configDir, "clawdbot.json"),
+        JSON.stringify({
+          agents: { list: [{ id: "pi" }] },
+          routing: { allowFrom: ["+15555550123"] },
+          customData: { preserved: true },
+        }),
+        "utf-8",
+      );
+
+      vi.resetModules();
+      const { readConfigFileSnapshot } = await import("./config.js");
+      const snap = await readConfigFileSnapshot();
+
+      expect(snap.valid).toBe(false);
+      expect(snap.legacyIssues.length).toBeGreaterThan(0);
+      expect((snap.config as Record<string, unknown>).customData).toEqual({
+        preserved: true,
+      });
     });
   });
 });

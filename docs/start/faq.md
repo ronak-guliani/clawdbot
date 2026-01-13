@@ -5,6 +5,90 @@ summary: "Frequently asked questions about Clawdbot setup, configuration, and us
 
 Quick answers plus deeper troubleshooting for real-world setups (local dev, VPS, multi-agent, OAuth/API keys, model failover). For runtime diagnostics, see [Troubleshooting](/gateway/troubleshooting). For the full config reference, see [Configuration](/gateway/configuration).
 
+## Table of contents
+
+- [What is Clawdbot, in one paragraph?](#what-is-clawdbot-in-one-paragraph)
+- [What’s the recommended way to install and set up Clawdbot?](#whats-the-recommended-way-to-install-and-set-up-clawdbot)
+- [How do I open the dashboard after onboarding?](#how-do-i-open-the-dashboard-after-onboarding)
+- [How do I authenticate the dashboard (token) on localhost vs remote?](#how-do-i-authenticate-the-dashboard-token-on-localhost-vs-remote)
+- [What runtime do I need?](#what-runtime-do-i-need)
+- [What does the onboarding wizard actually do?](#what-does-the-onboarding-wizard-actually-do)
+- [How does Anthropic "setup-token" auth work?](#how-does-anthropic-setup-token-auth-work)
+- [Do you support Claude subscription auth (Claude Code OAuth)?](#do-you-support-claude-subscription-auth-claude-code-oauth)
+- [Is AWS Bedrock supported?](#is-aws-bedrock-supported)
+- [How does Codex auth work?](#how-does-codex-auth-work)
+- [Is a local model OK for casual chats?](#is-a-local-model-ok-for-casual-chats)
+- [How do I keep hosted model traffic in a specific region?](#how-do-i-keep-hosted-model-traffic-in-a-specific-region)
+- [Can I use Bun?](#can-i-use-bun)
+- [Telegram: what goes in `allowFrom`?](#telegram-what-goes-in-allowfrom)
+- [Can multiple people use one WhatsApp number with different Clawdbots?](#can-multiple-people-use-one-whatsapp-number-with-different-clawdbots)
+- [Can I run a "fast chat" agent and an "Opus for coding" agent?](#can-i-run-a-fast-chat-agent-and-an-opus-for-coding-agent)
+- [Does Homebrew work on Linux?](#does-homebrew-work-on-linux)
+- [Can I switch between npm and git installs later?](#can-i-switch-between-npm-and-git-installs-later)
+- [How do I customize skills without keeping the repo dirty?](#how-do-i-customize-skills-without-keeping-the-repo-dirty)
+- [Can I load skills from a custom folder?](#can-i-load-skills-from-a-custom-folder)
+- [How can I use different models for different tasks?](#how-can-i-use-different-models-for-different-tasks)
+- [How do I install skills on Linux?](#how-do-i-install-skills-on-linux)
+- [Is there a dedicated sandboxing doc?](#is-there-a-dedicated-sandboxing-doc)
+- [How do I bind a host folder into the sandbox?](#how-do-i-bind-a-host-folder-into-the-sandbox)
+- [How does memory work?](#how-does-memory-work)
+- [Does semantic memory search require an OpenAI API key?](#does-semantic-memory-search-require-an-openai-api-key)
+- [Where does Clawdbot store its data?](#where-does-clawdbot-store-its-data)
+- [How do I completely uninstall Clawdbot?](#how-do-i-completely-uninstall-clawdbot)
+- [Can agents work outside the workspace?](#can-agents-work-outside-the-workspace)
+- [I’m in remote mode — where is the session store?](#im-in-remote-mode-where-is-the-session-store)
+- [What format is the config? Where is it?](#what-format-is-the-config-where-is-it)
+- [I set `gateway.bind: "lan"` (or `"tailnet"`) and now nothing listens / the UI says unauthorized](#i-set-gatewaybind-lan-or-tailnet-and-now-nothing-listens-the-ui-says-unauthorized)
+- [Why do I need a token on localhost now?](#why-do-i-need-a-token-on-localhost-now)
+- [Do I have to restart after changing config?](#do-i-have-to-restart-after-changing-config)
+- [How do I run a central Gateway with specialized workers across devices?](#how-do-i-run-a-central-gateway-with-specialized-workers-across-devices)
+- [Can the Clawdbot browser run headless?](#can-the-clawdbot-browser-run-headless)
+- [How do commands propagate between Telegram, the gateway, and nodes?](#how-do-commands-propagate-between-telegram-the-gateway-and-nodes)
+- [Do nodes run a gateway daemon?](#do-nodes-run-a-gateway-daemon)
+- [Is there an API / RPC way to apply config?](#is-there-an-api-rpc-way-to-apply-config)
+- [What’s a minimal “sane” config for a first install?](#whats-a-minimal-sane-config-for-a-first-install)
+- [How does Clawdbot load environment variables?](#how-does-clawdbot-load-environment-variables)
+- [“I started the Gateway via a daemon and my env vars disappeared.” What now?](#i-started-the-gateway-via-a-daemon-and-my-env-vars-disappeared-what-now)
+- [How do I start a fresh conversation?](#how-do-i-start-a-fresh-conversation)
+- [How do I completely reset Clawdbot (but keep it installed)?](#how-do-i-completely-reset-clawdbot-but-keep-it-installed)
+- [Do I need to add a “bot account” to a WhatsApp group?](#do-i-need-to-add-a-bot-account-to-a-whatsapp-group)
+- [Why doesn’t Clawdbot reply in a group?](#why-doesnt-clawdbot-reply-in-a-group)
+- [Do groups/threads share context with DMs?](#do-groupsthreads-share-context-with-dms)
+- [What is the “default model”?](#what-is-the-default-model)
+- [How do I switch models on the fly (without restarting)?](#how-do-i-switch-models-on-the-fly-without-restarting)
+- [Why do I see “Model … is not allowed” and then no reply?](#why-do-i-see-model-is-not-allowed-and-then-no-reply)
+- [Are opus / sonnet / gpt built‑in shortcuts?](#are-opus-sonnet-gpt-builtin-shortcuts)
+- [How do I define/override model shortcuts (aliases)?](#how-do-i-defineoverride-model-shortcuts-aliases)
+- [How do I add models from other providers like OpenRouter or Z.AI?](#how-do-i-add-models-from-other-providers-like-openrouter-or-zai)
+- [How does failover work?](#how-does-failover-work)
+- [What does this error mean?](#what-does-this-error-mean)
+- [Fix checklist for `No credentials found for profile "anthropic:default"`](#fix-checklist-for-no-credentials-found-for-profile-anthropicdefault)
+- [Why did it also try Google Gemini and fail?](#why-did-it-also-try-google-gemini-and-fail)
+- [What is an auth profile?](#what-is-an-auth-profile)
+- [What are typical profile IDs?](#what-are-typical-profile-ids)
+- [Can I control which auth profile is tried first?](#can-i-control-which-auth-profile-is-tried-first)
+- [OAuth vs API key: what’s the difference?](#oauth-vs-api-key-whats-the-difference)
+- [What port does the Gateway use?](#what-port-does-the-gateway-use)
+- [Why does `clawdbot daemon status` say `Runtime: running` but `RPC probe: failed`?](#why-does-clawdbot-daemon-status-say-runtime-running-but-rpc-probe-failed)
+- [Why does `clawdbot daemon status` show `Config (cli)` and `Config (daemon)` different?](#why-does-clawdbot-daemon-status-show-config-cli-and-config-daemon-different)
+- [What does “another gateway instance is already listening” mean?](#what-does-another-gateway-instance-is-already-listening-mean)
+- [How do I run Clawdbot in remote mode (client connects to a Gateway elsewhere)?](#how-do-i-run-clawdbot-in-remote-mode-client-connects-to-a-gateway-elsewhere)
+- [The Control UI says “unauthorized” (or keeps reconnecting). What now?](#the-control-ui-says-unauthorized-or-keeps-reconnecting-what-now)
+- [I set `gateway.bind: "tailnet"` but it can’t bind / nothing listens](#i-set-gatewaybind-tailnet-but-it-cant-bind-nothing-listens)
+- [Can I run multiple Gateways on the same host?](#can-i-run-multiple-gateways-on-the-same-host)
+- [Where are logs?](#where-are-logs)
+- [How do I start/stop/restart the Gateway daemon?](#how-do-i-startstoprestart-the-gateway-daemon)
+- [What’s the fastest way to get more details when something fails?](#whats-the-fastest-way-to-get-more-details-when-something-fails)
+- [My skill generated an image/PDF, but nothing was sent](#my-skill-generated-an-imagepdf-but-nothing-was-sent)
+- [Is it safe to expose Clawdbot to inbound DMs?](#is-it-safe-to-expose-clawdbot-to-inbound-dms)
+- [WhatsApp: will it message my contacts? How does pairing work?](#whatsapp-will-it-message-my-contacts-how-does-pairing-work)
+- [How do I stop/cancel a running task?](#how-do-i-stopcancel-a-running-task)
+- [Why does it feel like the bot “ignores” rapid‑fire messages?](#why-does-it-feel-like-the-bot-ignores-rapidfire-messages)
+- [“All models failed” — what should I check first?](#all-models-failed-what-should-i-check-first)
+- [I’m running on my personal WhatsApp number — why is self-chat weird?](#im-running-on-my-personal-whatsapp-number-why-is-self-chat-weird)
+- [WhatsApp logged me out. How do I re‑auth?](#whatsapp-logged-me-out-how-do-i-reauth)
+- [Build errors on `main` — what’s the standard fix path?](#build-errors-on-main-whats-the-standard-fix-path)
+
 ## First 60 seconds if something's broken
 
 1) **Quick status (first check)**
@@ -83,6 +167,24 @@ pnpm clawdbot onboard
 
 The wizard can also build UI assets automatically. After onboarding, you typically run the Gateway on port **18789**.
 
+### How do I open the dashboard after onboarding?
+
+The wizard now opens your browser with a tokenized dashboard URL right after onboarding and also prints the full link (with token) in the summary. Keep that tab open; if it didn’t launch, copy/paste the printed URL on the same machine. Tokens stay local to your host—nothing is fetched from the browser.
+
+### How do I authenticate the dashboard (token) on localhost vs remote?
+
+**Localhost (same machine):**
+- Open `http://127.0.0.1:18789/`.
+- If it asks for auth, run `clawdbot dashboard` and use the tokenized link (`?token=...`).
+- The token is the same value as `gateway.auth.token` (or `CLAWDBOT_GATEWAY_TOKEN`) and is stored by the UI after first load.
+
+**Not on localhost:**
+- **Tailscale Serve** (recommended): keep bind loopback, run `clawdbot gateway --tailscale serve`, open `https://<magicdns>/`. If `gateway.auth.allowTailscale` is `true`, identity headers satisfy auth (no token).
+- **Tailnet bind**: run `clawdbot gateway --bind tailnet --token "<token>"`, open `http://<tailscale-ip>:18789/`, paste token in dashboard settings.
+- **SSH tunnel**: `ssh -N -L 18789:127.0.0.1:18789 user@host` then open `http://127.0.0.1:18789/?token=...` from `clawdbot dashboard`.
+
+See [Dashboard](/web/dashboard) and [Web surfaces](/web) for bind modes and auth details.
+
 ### What runtime do I need?
 
 Node **>= 22** is required. `pnpm` is recommended; `bun` is optional.
@@ -110,15 +212,27 @@ Yes. Clawdbot can **reuse Claude Code CLI credentials** (OAuth) and also support
 
 ### Is AWS Bedrock supported?
 
-Not currently. Clawdbot doesn’t ship a Bedrock provider today. If you must use Bedrock, the common workaround is an OpenAI‑compatible proxy in front of Bedrock, then point Clawdbot at that endpoint. See [Model providers](/providers/models) and [Model providers (full list)](/concepts/model-providers).
+Yes — via pi‑ai’s **Amazon Bedrock (Converse)** provider with **manual config**. You must supply AWS credentials/region on the gateway host and add a Bedrock provider entry in your models config. See [Amazon Bedrock](/bedrock) and [Model providers](/providers/models). If you prefer a managed key flow, an OpenAI‑compatible proxy in front of Bedrock is still a valid option.
 
 ### How does Codex auth work?
 
 Clawdbot supports **OpenAI Code (Codex)** via OAuth or by reusing your Codex CLI login (`~/.codex/auth.json`). The wizard can import the CLI login or run the OAuth flow and will set the default model to `openai-codex/gpt-5.2` when appropriate. See [Model providers](/concepts/model-providers) and [Wizard](/start/wizard).
 
+### Is a local model OK for casual chats?
+
+Usually no. Clawdbot needs large context + strong safety; small cards truncate and leak. If you must, run the **largest** MiniMax M2.1 build you can locally (LM Studio) and see [/gateway/local-models](/gateway/local-models). Smaller/quantized models increase prompt-injection risk — see [Security](/gateway/security).
+
+### How do I keep hosted model traffic in a specific region?
+
+Pick region-pinned endpoints. OpenRouter exposes US-hosted options for MiniMax, Kimi, and GLM; choose the US-hosted variant to keep data in-region. You can still list Anthropic/OpenAI alongside these by using `models.mode: "merge"` so fallbacks stay available while respecting the regioned provider you select.
+
 ### Can I use Bun?
 
 Bun is supported for faster TypeScript execution, but **WhatsApp requires Node** in this ecosystem. The wizard lets you pick the runtime; choose **Node** if you use WhatsApp.
+
+### Telegram: what goes in `allowFrom`?
+
+`telegram.allowFrom` is **the human sender’s Telegram user ID** (numeric, recommended) or `@username`. It is not the bot username. To find your ID, DM `@userinfobot` or read the `from.id` in the gateway log for a DM. See [/providers/telegram](/providers/telegram#access-control-dms--groups).
 
 ### Can multiple people use one WhatsApp number with different Clawdbots?
 
@@ -170,6 +284,19 @@ Doctor detects a gateway service entrypoint mismatch and offers to rewrite the s
 
 Use managed overrides instead of editing the repo copy. Put your changes in `~/.clawdbot/skills/<name>/SKILL.md` (or add a folder via `skills.load.extraDirs` in `~/.clawdbot/clawdbot.json`). Precedence is `<workspace>/skills` > `~/.clawdbot/skills` > bundled, so managed overrides win without touching git. Only upstream-worthy edits should live in the repo and go out as PRs.
 
+### Can I load skills from a custom folder?
+
+Yes. Add extra directories via `skills.load.extraDirs` in `~/.clawdbot/clawdbot.json` (lowest precedence). Default precedence remains: `<workspace>/skills` → `~/.clawdbot/skills` → bundled → `skills.load.extraDirs`. `clawdhub` installs into `./skills` by default, which Clawdbot treats as `<workspace>/skills`.
+
+### How can I use different models for different tasks?
+
+Today the supported patterns are:
+- **Cron jobs**: isolated jobs can set a `model` override per job.
+- **Sub-agents**: route tasks to separate agents with different default models.
+- **On-demand switch**: use `/model` to switch the current session model at any time.
+
+See [Cron jobs](/automation/cron-jobs), [Multi-Agent Routing](/concepts/multi-agent), and [Slash commands](/tools/slash-commands).
+
 ### How do I install skills on Linux?
 
 Use **ClawdHub** (CLI) or drop skills into your workspace. The macOS Skills UI isn’t available on Linux.
@@ -195,11 +322,15 @@ clawdhub install <skill-slug>
 clawdhub update --all
 ```
 
-ClawdHub installs into `./skills` under your current directory; Clawdbot treats that as `<workspace>/skills` on the next session. For shared skills across agents, place them in `~/.clawdbot/skills/<name>/SKILL.md`. Some skills expect binaries installed via Homebrew; on Linux that means Linuxbrew (see the Homebrew Linux FAQ entry above). See [Skills](/tools/skills) and [ClawdHub](/tools/clawdhub).
+ClawdHub installs into `./skills` under your current directory (or falls back to your configured Clawdbot workspace); Clawdbot treats that as `<workspace>/skills` on the next session. For shared skills across agents, place them in `~/.clawdbot/skills/<name>/SKILL.md`. Some skills expect binaries installed via Homebrew; on Linux that means Linuxbrew (see the Homebrew Linux FAQ entry above). See [Skills](/tools/skills) and [ClawdHub](/tools/clawdhub).
 
 ### Is there a dedicated sandboxing doc?
 
 Yes. See [Sandboxing](/gateway/sandboxing). For Docker-specific setup (full gateway in Docker or sandbox images), see [Docker](/install/docker).
+
+### How do I bind a host folder into the sandbox?
+
+Set `agents.defaults.sandbox.docker.binds` to `["host:path:mode"]` (e.g., `"/home/user/src:/src:ro"`). Global + per-agent binds merge; per-agent binds are ignored when `scope: "shared"`. Use `:ro` for anything sensitive and remember binds bypass the sandbox filesystem walls. See [Sandboxing](/gateway/sandboxing#custom-bind-mounts) and [Sandbox vs Tool Policy vs Elevated](/gateway/sandbox-vs-tool-policy-vs-elevated#bind-mounts-security-quick-check) for examples and safety notes.
 
 ### How does memory work?
 
@@ -208,7 +339,19 @@ Clawdbot memory is just Markdown files in the agent workspace:
 - Curated long-term notes in `MEMORY.md` (main/private sessions only)
 
 Clawdbot also runs a **silent pre-compaction memory flush** to remind the model
-to write durable notes before auto-compaction. See [Memory](/concepts/memory).
+to write durable notes before auto-compaction. This only runs when the workspace
+is writable (read-only sandboxes skip it). See [Memory](/concepts/memory).
+
+### Does semantic memory search require an OpenAI API key?
+
+Only if you use **remote embeddings** (OpenAI). Codex OAuth covers
+chat/completions and does **not** grant embeddings access, so **signing in with
+Codex (OAuth or the Codex CLI login)** does not help for semantic memory search.
+Remote memory search still needs a real OpenAI API key (`OPENAI_API_KEY` or
+`models.providers.openai.apiKey`). If you’d rather stay local, set
+`memorySearch.provider = "local"` (and optionally `memorySearch.fallback =
+"none"`). We support **remote or local embedding models** — see [Memory](/concepts/memory)
+for the setup details.
 
 ## Where things live on disk
 
@@ -447,7 +590,7 @@ Notes:
 ### Do I need to add a “bot account” to a WhatsApp group?
 
 No. Clawdbot runs on **your own account**, so if you’re in the group, Clawdbot can see it.
-By default, anyone in that group can **mention** the bot to trigger a reply.
+By default, group replies are blocked until you allow senders (`groupPolicy: "allowlist"`).
 
 If you want only **you** to be able to trigger group replies:
 
@@ -755,6 +898,8 @@ Facts (from code):
 - The UI can import `?token=...` (and/or `?password=...`) once, then strips it from the URL.
 
 Fix:
+- Fastest: `clawdbot dashboard` (prints + copies tokenized link, tries to open; shows SSH hint if headless).
+- If remote, tunnel first: `ssh -N -L 18789:127.0.0.1:18789 user@host` then open `http://127.0.0.1:18789/?token=...`.
 - Set `gateway.auth.token` (or `CLAWDBOT_GATEWAY_TOKEN`) on the gateway host.
 - In the Control UI settings, paste the same token (or refresh with a one-time `?token=...` link).
 
@@ -768,6 +913,8 @@ Fix:
 
 ### Can I run multiple Gateways on the same host?
 
+Usually no — one Gateway can run multiple messaging channels and agents. Use multiple Gateways only when you need redundancy (ex: rescue bot) or hard isolation.
+
 Yes, but you must isolate:
 
 - `CLAWDBOT_CONFIG_PATH` (per‑instance config)
@@ -775,9 +922,12 @@ Yes, but you must isolate:
 - `agents.defaults.workspace` (workspace isolation)
 - `gateway.port` (unique ports)
 
-There are convenience CLI flags like `--dev` and `--profile <name>` that shift state dirs and ports.
-When using profiles, service names are suffixed (`com.clawdbot.<profile>`, `clawdbot-gateway-<profile>.service`,
-`Clawdbot Gateway (<profile>)`).
+Quick setup (recommended):
+- Use `clawdbot --profile <name> …` per instance (auto-creates `~/.clawdbot-<name>`).
+- Set a unique `gateway.port` in each profile config (or pass `--port` for manual runs).
+- Install a per-profile daemon: `clawdbot --profile <name> daemon install`.
+
+Profiles also suffix service names (`com.clawdbot.<profile>`, `clawdbot-gateway-<profile>.service`, `Clawdbot Gateway (<profile>)`).
 
 ## Logging and debugging
 
@@ -887,7 +1037,9 @@ For background processes (from the exec tool), you can ask the agent to run:
 process action:kill sessionId:XXX
 ```
 
-Slash commands only run when the **entire** message is the command (must start with `/`). Inline text like `hello /status` is ignored.
+Slash commands overview: see [Slash commands](/tools/slash-commands).
+
+Most commands must be sent as a **standalone** message that starts with `/`, but a few shortcuts (like `/status`) also work inline for allowlisted senders.
 
 ### Why does it feel like the bot “ignores” rapid‑fire messages?
 

@@ -7,6 +7,7 @@ import { Type } from "@sinclair/typebox";
 import { describe, expect, it, vi } from "vitest";
 import type { ClawdbotConfig } from "../config/config.js";
 import { resolveSessionAgentIds } from "./agent-scope.js";
+import { ensureClawdbotModelsJson } from "./models-config.js";
 import {
   applyGoogleTurnOrderingFix,
   buildEmbeddedSandboxInfo,
@@ -25,6 +26,9 @@ vi.mock("@mariozechner/pi-ai", async () => {
   return {
     ...actual,
     streamSimple: (model: { api: string; provider: string; id: string }) => {
+      if (model.id === "mock-error") {
+        throw new Error("boom");
+      }
       const stream = new actual.AssistantMessageEventStream();
       queueMicrotask(() => {
         stream.push({
@@ -59,6 +63,55 @@ vi.mock("@mariozechner/pi-ai", async () => {
     },
   };
 });
+
+const makeOpenAiConfig = (modelIds: string[]) =>
+  ({
+    models: {
+      providers: {
+        openai: {
+          api: "openai-responses",
+          apiKey: "sk-test",
+          baseUrl: "https://example.com",
+          models: modelIds.map((id) => ({
+            id,
+            name: `Mock ${id}`,
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 16_000,
+            maxTokens: 2048,
+          })),
+        },
+      },
+    },
+  }) satisfies ClawdbotConfig;
+
+const ensureModels = (cfg: ClawdbotConfig, agentDir: string) =>
+  ensureClawdbotModelsJson(cfg, agentDir);
+
+const textFromContent = (content: unknown) => {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content) && content[0]?.type === "text") {
+    return (content[0] as { text?: string }).text;
+  }
+  return undefined;
+};
+
+const readSessionMessages = async (sessionFile: string) => {
+  const raw = await fs.readFile(sessionFile, "utf-8");
+  return raw
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map(
+      (line) =>
+        JSON.parse(line) as {
+          type?: string;
+          message?: { role?: string; content?: unknown };
+        },
+    )
+    .filter((entry) => entry.type === "message")
+    .map((entry) => entry.message as { role?: string; content?: unknown });
+};
 
 describe("buildEmbeddedSandboxInfo", () => {
   it("returns undefined when sandbox is missing", () => {
@@ -650,7 +703,51 @@ describe("runEmbeddedPiAgent", () => {
     ).resolves.toBeTruthy();
   });
 
-  it("persists the first user message before assistant output", async () => {
+  it(
+    "persists the first user message before assistant output",
+    { timeout: 15_000 },
+    async () => {
+      const agentDir = await fs.mkdtemp(
+        path.join(os.tmpdir(), "clawdbot-agent-"),
+      );
+      const workspaceDir = await fs.mkdtemp(
+        path.join(os.tmpdir(), "clawdbot-workspace-"),
+      );
+      const sessionFile = path.join(workspaceDir, "session.jsonl");
+
+      const cfg = makeOpenAiConfig(["mock-1"]);
+      await ensureModels(cfg, agentDir);
+
+      await runEmbeddedPiAgent({
+        sessionId: "session:test",
+        sessionKey: "agent:main:main",
+        sessionFile,
+        workspaceDir,
+        config: cfg,
+        prompt: "hello",
+        provider: "openai",
+        model: "mock-1",
+        timeoutMs: 5_000,
+        agentDir,
+      });
+
+      const messages = await readSessionMessages(sessionFile);
+      const firstUserIndex = messages.findIndex(
+        (message) =>
+          message?.role === "user" &&
+          textFromContent(message.content) === "hello",
+      );
+      const firstAssistantIndex = messages.findIndex(
+        (message) => message?.role === "assistant",
+      );
+      expect(firstUserIndex).toBeGreaterThanOrEqual(0);
+      if (firstAssistantIndex !== -1) {
+        expect(firstUserIndex).toBeLessThan(firstAssistantIndex);
+      }
+    },
+  );
+
+  it("persists the user message when prompt fails before assistant output", async () => {
     const agentDir = await fs.mkdtemp(
       path.join(os.tmpdir(), "clawdbot-agent-"),
     );
@@ -659,28 +756,71 @@ describe("runEmbeddedPiAgent", () => {
     );
     const sessionFile = path.join(workspaceDir, "session.jsonl");
 
-    const cfg = {
-      models: {
-        providers: {
-          openai: {
-            api: "openai-responses",
-            apiKey: "sk-test",
-            baseUrl: "https://example.com",
-            models: [
-              {
-                id: "mock-1",
-                name: "Mock Model",
-                reasoning: false,
-                input: ["text"],
-                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                contextWindow: 16_000,
-                maxTokens: 2048,
-              },
-            ],
-          },
+    const cfg = makeOpenAiConfig(["mock-error"]);
+    await ensureModels(cfg, agentDir);
+
+    const result = await runEmbeddedPiAgent({
+      sessionId: "session:test",
+      sessionKey: "agent:main:main",
+      sessionFile,
+      workspaceDir,
+      config: cfg,
+      prompt: "boom",
+      provider: "openai",
+      model: "mock-error",
+      timeoutMs: 5_000,
+      agentDir,
+    });
+    expect(result.payloads[0]?.isError).toBe(true);
+
+    const messages = await readSessionMessages(sessionFile);
+    const userIndex = messages.findIndex(
+      (message) =>
+        message?.role === "user" && textFromContent(message.content) === "boom",
+    );
+    expect(userIndex).toBeGreaterThanOrEqual(0);
+  });
+
+  it("appends new user + assistant after existing transcript entries", async () => {
+    const agentDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "clawdbot-agent-"),
+    );
+    const workspaceDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "clawdbot-workspace-"),
+    );
+    const sessionFile = path.join(workspaceDir, "session.jsonl");
+
+    const sessionManager = SessionManager.open(sessionFile);
+    sessionManager.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "seed user" }],
+    });
+    sessionManager.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "seed assistant" }],
+      stopReason: "stop",
+      api: "openai-responses",
+      provider: "openai",
+      model: "mock-1",
+      usage: {
+        input: 1,
+        output: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 2,
+        cost: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          total: 0,
         },
       },
-    } satisfies ClawdbotConfig;
+      timestamp: Date.now(),
+    });
+
+    const cfg = makeOpenAiConfig(["mock-1"]);
+    await ensureModels(cfg, agentDir);
 
     await runEmbeddedPiAgent({
       sessionId: "session:test",
@@ -695,32 +835,91 @@ describe("runEmbeddedPiAgent", () => {
       agentDir,
     });
 
-    const raw = await fs.readFile(sessionFile, "utf-8");
-    const entries = raw
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as { type?: string; message?: unknown });
-    const messages = entries.filter((entry) => entry.type === "message");
-    const textFromContent = (content: unknown) => {
-      if (typeof content === "string") return content;
-      if (Array.isArray(content) && content[0]?.type === "text") {
-        return (content[0] as { text?: string }).text;
-      }
-      return undefined;
-    };
-    const firstUserIndex = messages.findIndex((entry) => {
-      const message = entry.message as { role?: string; content?: unknown };
-      return (
-        message?.role === "user" && textFromContent(message.content) === "hello"
-      );
+    const messages = await readSessionMessages(sessionFile);
+    const seedUserIndex = messages.findIndex(
+      (message) =>
+        message?.role === "user" &&
+        textFromContent(message.content) === "seed user",
+    );
+    const seedAssistantIndex = messages.findIndex(
+      (message) =>
+        message?.role === "assistant" &&
+        textFromContent(message.content) === "seed assistant",
+    );
+    const newUserIndex = messages.findIndex(
+      (message) =>
+        message?.role === "user" &&
+        textFromContent(message.content) === "hello",
+    );
+    const newAssistantIndex = messages.findIndex(
+      (message, index) => index > newUserIndex && message?.role === "assistant",
+    );
+    expect(seedUserIndex).toBeGreaterThanOrEqual(0);
+    expect(seedAssistantIndex).toBeGreaterThan(seedUserIndex);
+    expect(newUserIndex).toBeGreaterThan(seedAssistantIndex);
+    expect(newAssistantIndex).toBeGreaterThan(newUserIndex);
+  });
+
+  it("persists multi-turn user/assistant ordering across runs", async () => {
+    const agentDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "clawdbot-agent-"),
+    );
+    const workspaceDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "clawdbot-workspace-"),
+    );
+    const sessionFile = path.join(workspaceDir, "session.jsonl");
+
+    const cfg = makeOpenAiConfig(["mock-1"]);
+    await ensureModels(cfg, agentDir);
+
+    await runEmbeddedPiAgent({
+      sessionId: "session:test",
+      sessionKey: "agent:main:main",
+      sessionFile,
+      workspaceDir,
+      config: cfg,
+      prompt: "first",
+      provider: "openai",
+      model: "mock-1",
+      timeoutMs: 5_000,
+      agentDir,
     });
-    const firstAssistantIndex = messages.findIndex((entry) => {
-      const message = entry.message as { role?: string };
-      return message?.role === "assistant";
+
+    await runEmbeddedPiAgent({
+      sessionId: "session:test",
+      sessionKey: "agent:main:main",
+      sessionFile,
+      workspaceDir,
+      config: cfg,
+      prompt: "second",
+      provider: "openai",
+      model: "mock-1",
+      timeoutMs: 5_000,
+      agentDir,
     });
+
+    const messages = await readSessionMessages(sessionFile);
+    const firstUserIndex = messages.findIndex(
+      (message) =>
+        message?.role === "user" &&
+        textFromContent(message.content) === "first",
+    );
+    const firstAssistantIndex = messages.findIndex(
+      (message, index) =>
+        index > firstUserIndex && message?.role === "assistant",
+    );
+    const secondUserIndex = messages.findIndex(
+      (message) =>
+        message?.role === "user" &&
+        textFromContent(message.content) === "second",
+    );
+    const secondAssistantIndex = messages.findIndex(
+      (message, index) =>
+        index > secondUserIndex && message?.role === "assistant",
+    );
     expect(firstUserIndex).toBeGreaterThanOrEqual(0);
-    if (firstAssistantIndex !== -1) {
-      expect(firstUserIndex).toBeLessThan(firstAssistantIndex);
-    }
+    expect(firstAssistantIndex).toBeGreaterThan(firstUserIndex);
+    expect(secondUserIndex).toBeGreaterThan(firstAssistantIndex);
+    expect(secondAssistantIndex).toBeGreaterThan(secondUserIndex);
   });
 });

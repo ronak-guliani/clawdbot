@@ -179,6 +179,52 @@ describe("cli program", () => {
     );
   });
 
+  it("passes moonshot api key to onboard", async () => {
+    const program = buildProgram();
+    await program.parseAsync(
+      [
+        "onboard",
+        "--non-interactive",
+        "--auth-choice",
+        "moonshot-api-key",
+        "--moonshot-api-key",
+        "sk-moonshot-test",
+      ],
+      { from: "user" },
+    );
+    expect(onboardCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nonInteractive: true,
+        authChoice: "moonshot-api-key",
+        moonshotApiKey: "sk-moonshot-test",
+      }),
+      runtime,
+    );
+  });
+
+  it("passes synthetic api key to onboard", async () => {
+    const program = buildProgram();
+    await program.parseAsync(
+      [
+        "onboard",
+        "--non-interactive",
+        "--auth-choice",
+        "synthetic-api-key",
+        "--synthetic-api-key",
+        "sk-synthetic-test",
+      ],
+      { from: "user" },
+    );
+    expect(onboardCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nonInteractive: true,
+        authChoice: "synthetic-api-key",
+        syntheticApiKey: "sk-synthetic-test",
+      }),
+      runtime,
+    );
+  });
+
   it("passes zai api key to onboard", async () => {
     const program = buildProgram();
     await program.parseAsync(

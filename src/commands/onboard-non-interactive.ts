@@ -16,7 +16,11 @@ import {
 } from "../config/config.js";
 import { resolveGatewayLaunchAgentLabel } from "../daemon/constants.js";
 import { resolveGatewayProgramArguments } from "../daemon/program-args.js";
-import { resolvePreferredNodePath } from "../daemon/runtime-paths.js";
+import {
+  renderSystemNodeWarning,
+  resolvePreferredNodePath,
+  resolveSystemNodeInfo,
+} from "../daemon/runtime-paths.js";
 import { resolveGatewayService } from "../daemon/service.js";
 import { buildServiceEnvironment } from "../daemon/service-env.js";
 import { isSystemdUserServiceAvailable } from "../daemon/systemd.js";
@@ -34,14 +38,18 @@ import {
   applyAuthProfileConfig,
   applyMinimaxApiConfig,
   applyMinimaxConfig,
+  applyMoonshotConfig,
   applyOpencodeZenConfig,
   applyOpenrouterConfig,
+  applySyntheticConfig,
   applyZaiConfig,
   setAnthropicApiKey,
   setGeminiApiKey,
   setMinimaxApiKey,
+  setMoonshotApiKey,
   setOpencodeZenApiKey,
   setOpenrouterApiKey,
+  setSyntheticApiKey,
   setZaiApiKey,
 } from "./onboard-auth.js";
 import {
@@ -122,6 +130,13 @@ export async function runNonInteractiveOnboarding(
   runtime: RuntimeEnv = defaultRuntime,
 ) {
   const snapshot = await readConfigFileSnapshot();
+  if (snapshot.exists && !snapshot.valid) {
+    runtime.error(
+      "Config invalid. Run `clawdbot doctor` to repair it, then re-run onboarding.",
+    );
+    runtime.exit(1);
+    return;
+  }
   const baseConfig: ClawdbotConfig = snapshot.valid ? snapshot.config : {};
   const mode = opts.mode ?? "local";
   if (mode !== "local" && mode !== "remote") {
@@ -284,7 +299,49 @@ export async function runNonInteractiveOnboarding(
       mode: "api_key",
     });
     nextConfig = applyOpenrouterConfig(nextConfig);
-  } else if (authChoice === "minimax-cloud" || authChoice === "minimax-api") {
+  } else if (authChoice === "moonshot-api-key") {
+    const resolved = await resolveNonInteractiveApiKey({
+      provider: "moonshot",
+      cfg: baseConfig,
+      flagValue: opts.moonshotApiKey,
+      flagName: "--moonshot-api-key",
+      envVar: "MOONSHOT_API_KEY",
+      runtime,
+    });
+    if (!resolved) return;
+    if (resolved.source !== "profile") {
+      await setMoonshotApiKey(resolved.key);
+    }
+    nextConfig = applyAuthProfileConfig(nextConfig, {
+      profileId: "moonshot:default",
+      provider: "moonshot",
+      mode: "api_key",
+    });
+    nextConfig = applyMoonshotConfig(nextConfig);
+  } else if (authChoice === "synthetic-api-key") {
+    const resolved = await resolveNonInteractiveApiKey({
+      provider: "synthetic",
+      cfg: baseConfig,
+      flagValue: opts.syntheticApiKey,
+      flagName: "--synthetic-api-key",
+      envVar: "SYNTHETIC_API_KEY",
+      runtime,
+    });
+    if (!resolved) return;
+    if (resolved.source !== "profile") {
+      await setSyntheticApiKey(resolved.key);
+    }
+    nextConfig = applyAuthProfileConfig(nextConfig, {
+      profileId: "synthetic:default",
+      provider: "synthetic",
+      mode: "api_key",
+    });
+    nextConfig = applySyntheticConfig(nextConfig);
+  } else if (
+    authChoice === "minimax-cloud" ||
+    authChoice === "minimax-api" ||
+    authChoice === "minimax-api-lightning"
+  ) {
     const resolved = await resolveNonInteractiveApiKey({
       provider: "minimax",
       cfg: baseConfig,
@@ -302,7 +359,10 @@ export async function runNonInteractiveOnboarding(
       provider: "minimax",
       mode: "api_key",
     });
-    const modelId = "MiniMax-M2.1";
+    const modelId =
+      authChoice === "minimax-api-lightning"
+        ? "MiniMax-M2.1-lightning"
+        : "MiniMax-M2.1";
     nextConfig = applyMinimaxApiConfig(nextConfig, modelId);
   } else if (authChoice === "claude-cli") {
     const store = ensureAuthProfileStore(undefined, {
@@ -359,6 +419,7 @@ export async function runNonInteractiveOnboarding(
   } else if (
     authChoice === "token" ||
     authChoice === "oauth" ||
+    authChoice === "chutes" ||
     authChoice === "openai-codex" ||
     authChoice === "antigravity"
   ) {
@@ -507,6 +568,14 @@ export async function runNonInteractiveOnboarding(
           runtime: daemonRuntimeRaw,
           nodePath,
         });
+      if (daemonRuntimeRaw === "node") {
+        const systemNode = await resolveSystemNodeInfo({ env: process.env });
+        const warning = renderSystemNodeWarning(
+          systemNode,
+          programArguments[0],
+        );
+        if (warning) runtime.log(warning);
+      }
       const environment = buildServiceEnvironment({
         env: process.env,
         port,

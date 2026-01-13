@@ -1,10 +1,13 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { describe, expect, it } from "vitest";
+import type { ClawdbotConfig } from "../config/config.js";
 import {
   buildBootstrapContextFiles,
   classifyFailoverReason,
+  DEFAULT_BOOTSTRAP_MAX_CHARS,
   formatAssistantErrorText,
+  isAuthErrorMessage,
   isBillingErrorMessage,
   isCloudCodeAssistFormatError,
   isCompactionFailureError,
@@ -12,10 +15,11 @@ import {
   isFailoverErrorMessage,
   isMessagingToolDuplicate,
   normalizeTextForComparison,
+  resolveBootstrapMaxChars,
   sanitizeGoogleTurnOrdering,
   sanitizeSessionMessagesImages,
   sanitizeToolCallId,
-  validateGeminiTurns,
+  stripThoughtSignatures,
 } from "./pi-embedded-helpers.js";
 import {
   DEFAULT_AGENTS_FILENAME,
@@ -31,146 +35,6 @@ const makeFile = (
   missing: false,
   ...overrides,
 });
-
-describe("validateGeminiTurns", () => {
-  it("should return empty array unchanged", () => {
-    const result = validateGeminiTurns([]);
-    expect(result).toEqual([]);
-  });
-
-  it("should return single message unchanged", () => {
-    const msgs: AgentMessage[] = [
-      {
-        role: "user",
-        content: "Hello",
-      },
-    ];
-    const result = validateGeminiTurns(msgs);
-    expect(result).toEqual(msgs);
-  });
-
-  it("should leave alternating user/assistant unchanged", () => {
-    const msgs: AgentMessage[] = [
-      { role: "user", content: "Hello" },
-      { role: "assistant", content: [{ type: "text", text: "Hi" }] },
-      { role: "user", content: "How are you?" },
-      { role: "assistant", content: [{ type: "text", text: "Good!" }] },
-    ];
-    const result = validateGeminiTurns(msgs);
-    expect(result).toHaveLength(4);
-    expect(result).toEqual(msgs);
-  });
-
-  it("should merge consecutive assistant messages", () => {
-    const msgs: AgentMessage[] = [
-      { role: "user", content: "Hello" },
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "Part 1" }],
-        stopReason: "end_turn",
-      },
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "Part 2" }],
-        stopReason: "end_turn",
-      },
-      { role: "user", content: "How are you?" },
-    ];
-
-    const result = validateGeminiTurns(msgs);
-
-    expect(result).toHaveLength(3);
-    expect(result[0]).toEqual({ role: "user", content: "Hello" });
-    expect(result[1].role).toBe("assistant");
-    expect(result[1].content).toHaveLength(2);
-    expect(result[2]).toEqual({ role: "user", content: "How are you?" });
-  });
-
-  it("should preserve metadata from later message when merging", () => {
-    const msgs: AgentMessage[] = [
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "Part 1" }],
-        usage: { input: 10, output: 5 },
-      },
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "Part 2" }],
-        usage: { input: 10, output: 10 },
-        stopReason: "end_turn",
-      },
-    ];
-
-    const result = validateGeminiTurns(msgs);
-
-    expect(result).toHaveLength(1);
-    const merged = result[0] as Extract<AgentMessage, { role: "assistant" }>;
-    expect(merged.usage).toEqual({ input: 10, output: 10 });
-    expect(merged.stopReason).toBe("end_turn");
-    expect(merged.content).toHaveLength(2);
-  });
-
-  it("should handle toolResult messages without merging", () => {
-    const msgs: AgentMessage[] = [
-      { role: "user", content: "Use tool" },
-      {
-        role: "assistant",
-        content: [{ type: "toolUse", id: "tool-1", name: "test", input: {} }],
-      },
-      {
-        role: "toolResult",
-        toolUseId: "tool-1",
-        content: [{ type: "text", text: "Result" }],
-      },
-      { role: "user", content: "Next request" },
-    ];
-
-    const result = validateGeminiTurns(msgs);
-
-    expect(result).toHaveLength(4);
-    expect(result).toEqual(msgs);
-  });
-
-  it("should handle real-world corrupted sequence", () => {
-    // This is the pattern that causes Gemini errors:
-    // user → assistant → assistant (consecutive, wrong!)
-    const msgs: AgentMessage[] = [
-      { role: "user", content: "Request 1" },
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "Response A" }],
-      },
-      {
-        role: "assistant",
-        content: [{ type: "toolUse", id: "t1", name: "search", input: {} }],
-      },
-      {
-        role: "toolResult",
-        toolUseId: "t1",
-        content: [{ type: "text", text: "Found data" }],
-      },
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "Here's the answer" }],
-      },
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "Extra thoughts" }],
-      },
-      { role: "user", content: "Request 2" },
-    ];
-
-    const result = validateGeminiTurns(msgs);
-
-    // Should merge the consecutive assistants
-    expect(result[0].role).toBe("user");
-    expect(result[1].role).toBe("assistant");
-    expect(result[2].role).toBe("toolResult");
-    expect(result[3].role).toBe("assistant");
-    expect(result[4].role).toBe("user");
-  });
-});
-
 describe("buildBootstrapContextFiles", () => {
   it("keeps missing markers", () => {
     const files = [makeFile({ missing: true, content: undefined })];
@@ -188,17 +52,56 @@ describe("buildBootstrapContextFiles", () => {
   });
 
   it("truncates large bootstrap content", () => {
-    const head = `HEAD-${"a".repeat(6000)}`;
-    const tail = `${"b".repeat(3000)}-TAIL`;
+    const head = `HEAD-${"a".repeat(600)}`;
+    const tail = `${"b".repeat(300)}-TAIL`;
     const long = `${head}${tail}`;
-    const files = [makeFile({ content: long })];
-    const [result] = buildBootstrapContextFiles(files);
+    const files = [makeFile({ name: "TOOLS.md", content: long })];
+    const warnings: string[] = [];
+    const maxChars = 200;
+    const expectedTailChars = Math.floor(maxChars * 0.2);
+    const [result] = buildBootstrapContextFiles(files, {
+      maxChars,
+      warn: (message) => warnings.push(message),
+    });
     expect(result?.content).toContain(
-      "[...truncated, read AGENTS.md for full content...]",
+      "[...truncated, read TOOLS.md for full content...]",
     );
     expect(result?.content.length).toBeLessThan(long.length);
     expect(result?.content.startsWith(long.slice(0, 120))).toBe(true);
-    expect(result?.content.endsWith(long.slice(-120))).toBe(true);
+    expect(result?.content.endsWith(long.slice(-expectedTailChars))).toBe(true);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("TOOLS.md");
+    expect(warnings[0]).toContain("limit 200");
+  });
+
+  it("keeps content under the default limit", () => {
+    const long = "a".repeat(DEFAULT_BOOTSTRAP_MAX_CHARS - 10);
+    const files = [makeFile({ content: long })];
+    const [result] = buildBootstrapContextFiles(files);
+    expect(result?.content).toBe(long);
+    expect(result?.content).not.toContain(
+      "[...truncated, read AGENTS.md for full content...]",
+    );
+  });
+});
+
+describe("resolveBootstrapMaxChars", () => {
+  it("returns default when unset", () => {
+    expect(resolveBootstrapMaxChars()).toBe(DEFAULT_BOOTSTRAP_MAX_CHARS);
+  });
+
+  it("uses configured value when valid", () => {
+    const cfg = {
+      agents: { defaults: { bootstrapMaxChars: 12345 } },
+    } as ClawdbotConfig;
+    expect(resolveBootstrapMaxChars(cfg)).toBe(12345);
+  });
+
+  it("falls back when invalid", () => {
+    const cfg = {
+      agents: { defaults: { bootstrapMaxChars: -1 } },
+    } as ClawdbotConfig;
+    expect(resolveBootstrapMaxChars(cfg)).toBe(DEFAULT_BOOTSTRAP_MAX_CHARS);
   });
 });
 
@@ -265,6 +168,23 @@ describe("isBillingErrorMessage", () => {
   });
 });
 
+describe("isAuthErrorMessage", () => {
+  it("matches credential validation errors", () => {
+    const samples = [
+      'No credentials found for profile "anthropic:claude-cli".',
+      "No API key found for profile openai.",
+    ];
+    for (const sample of samples) {
+      expect(isAuthErrorMessage(sample)).toBe(true);
+    }
+  });
+
+  it("ignores unrelated errors", () => {
+    expect(isAuthErrorMessage("rate limit exceeded")).toBe(false);
+    expect(isAuthErrorMessage("billing issue detected")).toBe(false);
+  });
+});
+
 describe("isFailoverErrorMessage", () => {
   it("matches auth/rate/billing/timeout", () => {
     const samples = [
@@ -283,6 +203,8 @@ describe("isFailoverErrorMessage", () => {
 describe("classifyFailoverReason", () => {
   it("returns a stable reason", () => {
     expect(classifyFailoverReason("invalid api key")).toBe("auth");
+    expect(classifyFailoverReason("no credentials found")).toBe("auth");
+    expect(classifyFailoverReason("no api key found")).toBe("auth");
     expect(classifyFailoverReason("429 too many requests")).toBe("rate_limit");
     expect(classifyFailoverReason("resource has been exhausted")).toBe(
       "rate_limit",
@@ -333,6 +255,15 @@ describe("formatAssistantErrorText", () => {
   it("returns a friendly message for context overflow", () => {
     const msg = makeAssistantError("request_too_large");
     expect(formatAssistantErrorText(msg)).toContain("Context overflow");
+  });
+
+  it("returns a friendly message for Anthropic role ordering", () => {
+    const msg = makeAssistantError(
+      'messages: roles must alternate between "user" and "assistant"',
+    );
+    expect(formatAssistantErrorText(msg)).toContain(
+      "Message ordering conflict",
+    );
   });
 });
 
@@ -636,6 +567,96 @@ describe("normalizeTextForComparison", () => {
     expect(normalizeTextForComparison("  Hello 👋   WORLD  🌍  ")).toBe(
       "hello world",
     );
+  });
+});
+
+describe("stripThoughtSignatures", () => {
+  it("returns non-array content unchanged", () => {
+    expect(stripThoughtSignatures("hello")).toBe("hello");
+    expect(stripThoughtSignatures(null)).toBe(null);
+    expect(stripThoughtSignatures(undefined)).toBe(undefined);
+    expect(stripThoughtSignatures(123)).toBe(123);
+  });
+
+  it("removes msg_-prefixed thought_signature from content blocks", () => {
+    const input = [
+      { type: "text", text: "hello", thought_signature: "msg_abc123" },
+      { type: "thinking", thinking: "test", thought_signature: "AQID" },
+    ];
+    const result = stripThoughtSignatures(input);
+
+    expect(result).toHaveLength(2);
+    expect(result[0]).toEqual({ type: "text", text: "hello" });
+    expect(result[1]).toEqual({
+      type: "thinking",
+      thinking: "test",
+      thought_signature: "AQID",
+    });
+    expect("thought_signature" in result[0]).toBe(false);
+    expect("thought_signature" in result[1]).toBe(true);
+  });
+
+  it("preserves blocks without thought_signature", () => {
+    const input = [
+      { type: "text", text: "hello" },
+      { type: "toolCall", id: "call_1", name: "read", arguments: {} },
+    ];
+    const result = stripThoughtSignatures(input);
+
+    expect(result).toEqual(input);
+  });
+
+  it("handles mixed blocks with and without thought_signature", () => {
+    const input = [
+      { type: "text", text: "hello", thought_signature: "msg_abc" },
+      { type: "toolCall", id: "call_1", name: "read", arguments: {} },
+      { type: "thinking", thinking: "hmm", thought_signature: "msg_xyz" },
+    ];
+    const result = stripThoughtSignatures(input);
+
+    expect(result).toEqual([
+      { type: "text", text: "hello" },
+      { type: "toolCall", id: "call_1", name: "read", arguments: {} },
+      { type: "thinking", thinking: "hmm" },
+    ]);
+  });
+
+  it("handles empty array", () => {
+    expect(stripThoughtSignatures([])).toEqual([]);
+  });
+
+  it("handles null/undefined blocks in array", () => {
+    const input = [null, undefined, { type: "text", text: "hello" }];
+    const result = stripThoughtSignatures(input);
+    expect(result).toEqual([null, undefined, { type: "text", text: "hello" }]);
+  });
+});
+
+describe("sanitizeSessionMessagesImages - thought_signature stripping", () => {
+  it("strips msg_-prefixed thought_signature from assistant message content blocks", async () => {
+    const input = [
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "hello", thought_signature: "msg_abc123" },
+          {
+            type: "thinking",
+            thinking: "reasoning",
+            thought_signature: "AQID",
+          },
+        ],
+      },
+    ] satisfies AgentMessage[];
+
+    const out = await sanitizeSessionMessagesImages(input, "test");
+
+    expect(out).toHaveLength(1);
+    const content = (out[0] as { content?: unknown[] }).content;
+    expect(content).toHaveLength(2);
+    expect("thought_signature" in ((content?.[0] ?? {}) as object)).toBe(false);
+    expect(
+      (content?.[1] as { thought_signature?: unknown })?.thought_signature,
+    ).toBe("AQID");
   });
 });
 

@@ -53,11 +53,16 @@ import {
 } from "../config/config.js";
 import { resolveGatewayLaunchAgentLabel } from "../daemon/constants.js";
 import { resolveGatewayProgramArguments } from "../daemon/program-args.js";
-import { resolvePreferredNodePath } from "../daemon/runtime-paths.js";
+import {
+  renderSystemNodeWarning,
+  resolvePreferredNodePath,
+  resolveSystemNodeInfo,
+} from "../daemon/runtime-paths.js";
 import { resolveGatewayService } from "../daemon/service.js";
 import { buildServiceEnvironment } from "../daemon/service-env.js";
 import { isSystemdUserServiceAvailable } from "../daemon/systemd.js";
 import { ensureControlUiAssetsBuilt } from "../infra/control-ui-assets.js";
+import { findTailscaleBinary } from "../infra/tailscale.js";
 import { listProviderPlugins } from "../providers/plugins/index.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { defaultRuntime } from "../runtime.js";
@@ -92,6 +97,14 @@ export async function runOnboardingWizard(
       );
     }
 
+    if (!snapshot.valid) {
+      await prompter.outro(
+        "Config invalid. Run `clawdbot doctor` to repair it, then re-run onboarding.",
+      );
+      runtime.exit(1);
+      return;
+    }
+
     const action = (await prompter.select({
       message: "Config handling",
       options: [
@@ -119,8 +132,6 @@ export async function runOnboardingWizard(
         ],
       })) as ResetScope;
       await handleReset(resetScope, resolveUserPath(workspaceDefault), runtime);
-      baseConfig = {};
-    } else if (action === "keep" && !snapshot.valid) {
       baseConfig = {};
     }
   }
@@ -163,14 +174,15 @@ export async function runOnboardingWizard(
       baseConfig.gateway?.auth?.mode !== undefined ||
       baseConfig.gateway?.auth?.token !== undefined ||
       baseConfig.gateway?.auth?.password !== undefined ||
+      baseConfig.gateway?.customBindHost !== undefined ||
       baseConfig.gateway?.tailscale?.mode !== undefined;
 
     const bindRaw = baseConfig.gateway?.bind;
     const bind =
       bindRaw === "loopback" ||
       bindRaw === "lan" ||
-      bindRaw === "tailnet" ||
-      bindRaw === "auto"
+      bindRaw === "auto" ||
+      bindRaw === "custom"
         ? bindRaw
         : "loopback";
 
@@ -202,15 +214,16 @@ export async function runOnboardingWizard(
       tailscaleMode,
       token: baseConfig.gateway?.auth?.token,
       password: baseConfig.gateway?.auth?.password,
+      customBindHost: baseConfig.gateway?.customBindHost,
       tailscaleResetOnExit: baseConfig.gateway?.tailscale?.resetOnExit ?? false,
     };
   })();
 
   if (flow === "quickstart") {
-    const formatBind = (value: "loopback" | "lan" | "tailnet" | "auto") => {
+    const formatBind = (value: "loopback" | "lan" | "auto" | "custom") => {
       if (value === "loopback") return "Loopback (127.0.0.1)";
       if (value === "lan") return "LAN";
-      if (value === "tailnet") return "Tailnet";
+      if (value === "custom") return "Custom IP";
       return "Auto";
     };
     const formatAuth = (value: GatewayAuthChoice) => {
@@ -228,6 +241,10 @@ export async function runOnboardingWizard(
           "Keeping your current gateway settings:",
           `Gateway port: ${quickstartGateway.port}`,
           `Gateway bind: ${formatBind(quickstartGateway.bind)}`,
+          ...(quickstartGateway.bind === "custom" &&
+          quickstartGateway.customBindHost
+            ? [`Gateway custom IP: ${quickstartGateway.customBindHost}`]
+            : []),
           `Gateway auth: ${formatAuth(quickstartGateway.authMode)}`,
           `Tailscale exposure: ${formatTailscale(
             quickstartGateway.tailscaleMode,
@@ -386,11 +403,41 @@ export async function runOnboardingWizard(
           options: [
             { value: "loopback", label: "Loopback (127.0.0.1)" },
             { value: "lan", label: "LAN" },
-            { value: "tailnet", label: "Tailnet" },
             { value: "auto", label: "Auto" },
+            { value: "custom", label: "Custom IP" },
           ],
-        })) as "loopback" | "lan" | "tailnet" | "auto")
-  ) as "loopback" | "lan" | "tailnet" | "auto";
+        })) as "loopback" | "lan" | "auto" | "custom")
+  ) as "loopback" | "lan" | "auto" | "custom";
+
+  let customBindHost = quickstartGateway.customBindHost;
+  if (bind === "custom") {
+    const needsPrompt = flow !== "quickstart" || !customBindHost;
+    if (needsPrompt) {
+      const input = await prompter.text({
+        message: "Custom IP address",
+        placeholder: "192.168.1.100",
+        initialValue: customBindHost ?? "",
+        validate: (value) => {
+          if (!value) return "IP address is required for custom bind mode";
+          const trimmed = value.trim();
+          const parts = trimmed.split(".");
+          if (parts.length !== 4)
+            return "Invalid IPv4 address (e.g., 192.168.1.100)";
+          if (
+            parts.every((part) => {
+              const n = parseInt(part, 10);
+              return (
+                !Number.isNaN(n) && n >= 0 && n <= 255 && part === String(n)
+              );
+            })
+          )
+            return undefined;
+          return "Invalid IPv4 address (each octet must be 0-255)";
+        },
+      });
+      customBindHost = typeof input === "string" ? input.trim() : undefined;
+    }
+  }
 
   let authMode = (
     flow === "quickstart"
@@ -435,6 +482,23 @@ export async function runOnboardingWizard(
         })) as "off" | "serve" | "funnel")
   ) as "off" | "serve" | "funnel";
 
+  // Detect Tailscale binary before proceeding with serve/funnel setup
+  if (tailscaleMode !== "off") {
+    const tailscaleBin = await findTailscaleBinary();
+    if (!tailscaleBin) {
+      await prompter.note(
+        [
+          "Tailscale binary not found in PATH or /Applications.",
+          "Ensure Tailscale is installed from:",
+          "  https://tailscale.com/download/mac",
+          "",
+          "You can continue setup, but serve/funnel will fail at runtime.",
+        ].join("\n"),
+        "Tailscale Warning",
+      );
+    }
+  }
+
   let tailscaleResetOnExit =
     flow === "quickstart" ? quickstartGateway.tailscaleResetOnExit : false;
   if (tailscaleMode !== "off" && flow !== "quickstart") {
@@ -460,6 +524,7 @@ export async function runOnboardingWizard(
       "Note",
     );
     bind = "loopback";
+    customBindHost = undefined;
   }
 
   if (authMode === "off" && bind !== "loopback") {
@@ -528,6 +593,7 @@ export async function runOnboardingWizard(
       ...nextConfig.gateway,
       port,
       bind,
+      ...(bind === "custom" && customBindHost ? { customBindHost } : {}),
       tailscale: {
         ...nextConfig.gateway?.tailscale,
         mode: tailscaleMode,
@@ -631,6 +697,7 @@ export async function runOnboardingWizard(
     }
     const service = resolveGatewayService();
     const loaded = await service.isLoaded({
+      env: process.env,
       profile: process.env.CLAWDBOT_PROFILE,
     });
     if (loaded) {
@@ -644,6 +711,7 @@ export async function runOnboardingWizard(
       })) as "restart" | "reinstall" | "skip";
       if (action === "restart") {
         await service.restart({
+          env: process.env,
           profile: process.env.CLAWDBOT_PROFILE,
           stdout: process.stdout,
         });
@@ -655,8 +723,10 @@ export async function runOnboardingWizard(
     if (
       !loaded ||
       (loaded &&
-        (await service.isLoaded({ profile: process.env.CLAWDBOT_PROFILE })) ===
-          false)
+        (await service.isLoaded({
+          env: process.env,
+          profile: process.env.CLAWDBOT_PROFILE,
+        })) === false)
     ) {
       const devMode =
         process.argv[1]?.includes(`${path.sep}src${path.sep}`) &&
@@ -672,6 +742,14 @@ export async function runOnboardingWizard(
           runtime: daemonRuntime,
           nodePath,
         });
+      if (daemonRuntime === "node") {
+        const systemNode = await resolveSystemNodeInfo({ env: process.env });
+        const warning = renderSystemNodeWarning(
+          systemNode,
+          programArguments[0],
+        );
+        if (warning) await prompter.note(warning, "Gateway runtime");
+      }
       const environment = buildServiceEnvironment({
         env: process.env,
         port,
@@ -723,10 +801,14 @@ export async function runOnboardingWizard(
     "Optional apps",
   );
 
+  const controlUiBasePath =
+    nextConfig.gateway?.controlUi?.basePath ??
+    baseConfig.gateway?.controlUi?.basePath;
   const links = resolveControlUiLinks({
     bind,
     port,
-    basePath: baseConfig.gateway?.controlUi?.basePath,
+    customBindHost,
+    basePath: controlUiBasePath,
   });
   const tokenParam =
     authMode === "token" && gatewayToken
@@ -736,7 +818,7 @@ export async function runOnboardingWizard(
   const gatewayProbe = await probeGatewayReachable({
     url: links.wsUrl,
     token: authMode === "token" ? gatewayToken : undefined,
-    password: authMode === "password" ? baseConfig.gateway?.auth?.password : "",
+    password: authMode === "password" ? nextConfig.gateway?.auth?.password : "",
   });
   const gatewayStatusLine = gatewayProbe.ok
     ? "Gateway: reachable"
@@ -781,6 +863,8 @@ export async function runOnboardingWizard(
           token: authMode === "token" ? gatewayToken : undefined,
           password:
             authMode === "password" ? baseConfig.gateway?.auth?.password : "",
+          // Safety: onboarding TUI should not auto-deliver to lastProvider/lastTo.
+          deliver: false,
           message: "Wake up, my friend!",
         });
       }
@@ -790,29 +874,16 @@ export async function runOnboardingWizard(
         await prompter.note(
           formatControlUiSshHint({
             port,
-            basePath: baseConfig.gateway?.controlUi?.basePath,
+            basePath: controlUiBasePath,
             token: authMode === "token" ? gatewayToken : undefined,
           }),
           "Open Control UI",
         );
       } else {
-        const wantsOpen = await prompter.confirm({
-          message: "Open Control UI now?",
-          initialValue: true,
-        });
-        if (wantsOpen) {
-          const opened = await openUrl(`${links.httpUrl}${tokenParam}`);
-          if (!opened) {
-            await prompter.note(
-              formatControlUiSshHint({
-                port,
-                basePath: baseConfig.gateway?.controlUi?.basePath,
-                token: authMode === "token" ? gatewayToken : undefined,
-              }),
-              "Open Control UI",
-            );
-          }
-        }
+        await prompter.note(
+          "Opening Control UI automatically after onboarding (no extra prompts).",
+          "Open Control UI",
+        );
       }
     }
   } else if (opts.skipUi) {
@@ -832,5 +903,46 @@ export async function runOnboardingWizard(
     "Security",
   );
 
-  await prompter.outro("Onboarding complete.");
+  const shouldOpenControlUi =
+    !opts.skipUi && authMode === "token" && Boolean(gatewayToken);
+  let controlUiOpened = false;
+  let controlUiOpenHint: string | undefined;
+  if (shouldOpenControlUi) {
+    const browserSupport = await detectBrowserOpenSupport();
+    if (browserSupport.ok) {
+      controlUiOpened = await openUrl(authedUrl);
+      if (!controlUiOpened) {
+        controlUiOpenHint = formatControlUiSshHint({
+          port,
+          basePath: controlUiBasePath,
+          token: gatewayToken,
+        });
+      }
+    } else {
+      controlUiOpenHint = formatControlUiSshHint({
+        port,
+        basePath: controlUiBasePath,
+        token: gatewayToken,
+      });
+    }
+
+    await prompter.note(
+      [
+        `Dashboard link (with token): ${authedUrl}`,
+        controlUiOpened
+          ? "Opened in your browser. Keep that tab to control Clawdbot."
+          : "Copy/paste this URL in a browser on this machine to control Clawdbot.",
+        controlUiOpenHint,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      "Dashboard ready",
+    );
+  }
+
+  await prompter.outro(
+    controlUiOpened
+      ? "Onboarding complete. Dashboard opened with your token; keep that tab to control Clawdbot."
+      : "Onboarding complete. Use the tokenized dashboard link above to control Clawdbot.",
+  );
 }

@@ -167,7 +167,10 @@ export async function statusAllCommand(
           const service = resolveGatewayService();
           const [loaded, runtimeInfo, command] = await Promise.all([
             service
-              .isLoaded({ profile: process.env.CLAWDBOT_PROFILE })
+              .isLoaded({
+                env: process.env,
+                profile: process.env.CLAWDBOT_PROFILE,
+              })
               .catch(() => false),
             service.readRuntime(process.env).catch(() => undefined),
             service.readCommand(process.env).catch(() => null),
@@ -271,6 +274,7 @@ export async function statusAllCommand(
         ? resolveControlUiLinks({
             port,
             bind: cfg.gateway?.bind,
+            customBindHost: cfg.gateway?.customBindHost,
             basePath: cfg.gateway?.controlUi?.basePath,
           }).httpUrl
         : null;

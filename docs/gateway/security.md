@@ -70,8 +70,9 @@ Clawdbot has two separate “who can trigger me?” layers:
 - **Group allowlist** (provider-specific): which groups/channels/guilds the bot will accept messages from at all.
   - Common patterns:
     - `whatsapp.groups`, `telegram.groups`, `imessage.groups`: per-group defaults like `requireMention`; when set, it also acts as a group allowlist (include `"*"` to keep allow-all behavior).
-    - `groupPolicy="allowlist"` + `groupAllowFrom`: restrict who can trigger the bot *inside* a group session (WhatsApp/Telegram/Signal/iMessage).
+    - `groupPolicy="allowlist"` + `groupAllowFrom`: restrict who can trigger the bot *inside* a group session (WhatsApp/Telegram/Signal/iMessage/Microsoft Teams).
     - `discord.guilds` / `slack.channels`: per-surface allowlists + mention defaults.
+  - **Security note:** treat `dmPolicy="open"` and `groupPolicy="open"` as last-resort settings. They should be barely used; prefer pairing + allowlists unless you fully trust every member of the room.
 
 Details: [Configuration](/gateway/configuration) and [Groups](/concepts/groups)
 
@@ -143,6 +144,20 @@ Doctor can generate one for you: `clawdbot doctor --generate-gateway-token`.
 
 Note: `gateway.remote.token` is **only** for remote CLI calls; it does not
 protect local WS access.
+
+### 0.6) Tailscale Serve identity headers
+
+When `gateway.auth.allowTailscale` is `true` (default for Serve), Clawdbot
+accepts Tailscale Serve identity headers (`tailscale-user-login`) as
+authentication. This only triggers for requests that hit loopback and include
+`x-forwarded-for`, `x-forwarded-proto`, and `x-forwarded-host` as injected by
+Tailscale.
+
+**Security rule:** do not forward these headers from your own reverse proxy. If
+you terminate TLS or proxy in front of the gateway, disable
+`gateway.auth.allowTailscale` and use token/password auth instead.
+
+See [Tailscale](/gateway/tailscale) and [Web overview](/web).
 
 ### 1) DMs: pairing by default
 

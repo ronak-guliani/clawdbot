@@ -175,6 +175,7 @@ declare global {
 const DEFAULT_CRON_FORM: CronFormState = {
   name: "",
   description: "",
+  agentId: "",
   enabled: true,
   scheduleKind: "every",
   scheduleAt: "",
@@ -400,6 +401,7 @@ export class ClawdbotApp extends LitElement {
   private chatScrollFrame: number | null = null;
   private chatScrollTimeout: number | null = null;
   private chatHasAutoScrolled = false;
+  private chatUserNearBottom = true;
   private nodesPollInterval: number | null = null;
   private logsPollInterval: number | null = null;
   private logsScrollFrame: number | null = null;
@@ -525,10 +527,12 @@ export class ClawdbotApp extends LitElement {
         if (!target) return;
         const distanceFromBottom =
           target.scrollHeight - target.scrollTop - target.clientHeight;
-        const shouldStick = force || distanceFromBottom < 200;
+        const shouldStick =
+          force || this.chatUserNearBottom || distanceFromBottom < 200;
         if (!shouldStick) return;
         if (force) this.chatHasAutoScrolled = true;
         target.scrollTop = target.scrollHeight;
+        this.chatUserNearBottom = true;
         const retryDelay = force ? 150 : 120;
         this.chatScrollTimeout = window.setTimeout(() => {
           this.chatScrollTimeout = null;
@@ -536,8 +540,11 @@ export class ClawdbotApp extends LitElement {
           if (!latest) return;
           const latestDistanceFromBottom =
             latest.scrollHeight - latest.scrollTop - latest.clientHeight;
-          if (!force && latestDistanceFromBottom >= 250) return;
+          const shouldStickRetry =
+            force || this.chatUserNearBottom || latestDistanceFromBottom < 200;
+          if (!shouldStickRetry) return;
           latest.scrollTop = latest.scrollHeight;
+          this.chatUserNearBottom = true;
         }, retryDelay);
       });
     });
@@ -600,6 +607,14 @@ export class ClawdbotApp extends LitElement {
     });
   }
 
+  handleChatScroll(event: Event) {
+    const container = event.currentTarget as HTMLElement | null;
+    if (!container) return;
+    const distanceFromBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    this.chatUserNearBottom = distanceFromBottom < 200;
+  }
+
   handleLogsScroll(event: Event) {
     const container = event.currentTarget as HTMLElement | null;
     if (!container) return;
@@ -630,6 +645,7 @@ export class ClawdbotApp extends LitElement {
 
   resetChatScroll() {
     this.chatHasAutoScrolled = false;
+    this.chatUserNearBottom = true;
   }
 
   toggleToolOutput(id: string, expanded: boolean) {

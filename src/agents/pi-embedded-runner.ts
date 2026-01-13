@@ -43,6 +43,7 @@ import {
   enqueueCommandInLane,
 } from "../process/command-queue.js";
 import { normalizeMessageProvider } from "../utils/message-provider.js";
+import { isReasoningTagProvider } from "../utils/provider-utils.js";
 import { resolveUserPath } from "../utils.js";
 import { resolveClawdbotAgentDir } from "./agent-paths.js";
 import { resolveSessionAgentIds } from "./agent-scope.js";
@@ -84,6 +85,7 @@ export type { MessagingToolSend } from "./pi-embedded-messaging.js";
 import {
   buildBootstrapContextFiles,
   classifyFailoverReason,
+  downgradeGeminiHistory,
   type EmbeddedContextFile,
   ensureSessionHeader,
   formatAssistantErrorText,
@@ -97,8 +99,10 @@ import {
   isRateLimitAssistantError,
   isTimeoutErrorMessage,
   pickFallbackThinkingLevel,
+  resolveBootstrapMaxChars,
   sanitizeGoogleTurnOrdering,
   sanitizeSessionMessagesImages,
+  validateAnthropicTurns,
   validateGeminiTurns,
 } from "./pi-embedded-helpers.js";
 import {
@@ -116,6 +120,7 @@ import { makeToolPrunablePredicate } from "./pi-extensions/context-pruning/tools
 import { toToolDefinitions } from "./pi-tool-definition-adapter.js";
 import { createClawdbotCodingTools } from "./pi-tools.js";
 import { resolveSandboxContext } from "./sandbox.js";
+import { guardSessionManager } from "./session-tool-result-guard-wrapper.js";
 import { sanitizeToolUseResultPairing } from "./session-transcript-repair.js";
 import {
   applySkillEnvOverrides,
@@ -316,6 +321,12 @@ function buildContextPruningExtension(params: {
   };
 }
 
+function resolveCompactionMode(cfg?: ClawdbotConfig): "default" | "safeguard" {
+  return cfg?.agents?.defaults?.compaction?.mode === "safeguard"
+    ? "safeguard"
+    : "default";
+}
+
 function buildEmbeddedExtensionPaths(params: {
   cfg: ClawdbotConfig | undefined;
   sessionManager: SessionManager;
@@ -324,6 +335,9 @@ function buildEmbeddedExtensionPaths(params: {
   model: Model<Api> | undefined;
 }): string[] {
   const paths = [resolvePiExtensionPath("transcript-sanitize")];
+  if (resolveCompactionMode(params.cfg) === "safeguard") {
+    paths.push(resolvePiExtensionPath("compaction-safeguard"));
+  }
   const pruning = buildContextPruningExtension(params);
   if (pruning.additionalExtensionPaths) {
     paths.push(...pruning.additionalExtensionPaths);
@@ -412,6 +426,85 @@ type EmbeddedPiQueueHandle = {
 
 const log = createSubsystemLogger("agent/embedded");
 const GOOGLE_TURN_ORDERING_CUSTOM_TYPE = "google-turn-ordering-bootstrap";
+const GOOGLE_SCHEMA_UNSUPPORTED_KEYWORDS = new Set([
+  "patternProperties",
+  "additionalProperties",
+  "$schema",
+  "$id",
+  "$ref",
+  "$defs",
+  "definitions",
+  "examples",
+  "minLength",
+  "maxLength",
+  "minimum",
+  "maximum",
+  "multipleOf",
+  "pattern",
+  "format",
+  "minItems",
+  "maxItems",
+  "uniqueItems",
+  "minProperties",
+  "maxProperties",
+]);
+
+function findUnsupportedSchemaKeywords(
+  schema: unknown,
+  path: string,
+): string[] {
+  if (!schema || typeof schema !== "object") return [];
+  if (Array.isArray(schema)) {
+    return schema.flatMap((item, index) =>
+      findUnsupportedSchemaKeywords(item, `${path}[${index}]`),
+    );
+  }
+  const record = schema as Record<string, unknown>;
+  const violations: string[] = [];
+  for (const [key, value] of Object.entries(record)) {
+    if (GOOGLE_SCHEMA_UNSUPPORTED_KEYWORDS.has(key)) {
+      violations.push(`${path}.${key}`);
+    }
+    if (value && typeof value === "object") {
+      violations.push(
+        ...findUnsupportedSchemaKeywords(value, `${path}.${key}`),
+      );
+    }
+  }
+  return violations;
+}
+
+function logToolSchemasForGoogle(params: {
+  tools: AgentTool[];
+  provider: string;
+}) {
+  if (
+    params.provider !== "google-antigravity" &&
+    params.provider !== "google-gemini-cli"
+  ) {
+    return;
+  }
+  const toolNames = params.tools.map((tool, index) => `${index}:${tool.name}`);
+  log.info("google tool schema snapshot", {
+    provider: params.provider,
+    toolCount: params.tools.length,
+    tools: toolNames,
+  });
+  for (const [index, tool] of params.tools.entries()) {
+    const violations = findUnsupportedSchemaKeywords(
+      tool.parameters,
+      `${tool.name}.parameters`,
+    );
+    if (violations.length > 0) {
+      log.warn("google tool schema has unsupported keywords", {
+        index,
+        tool: tool.name,
+        violations: violations.slice(0, 12),
+        violationCount: violations.length,
+      });
+    }
+  }
+}
 
 registerUnhandledRejectionHandler((reason) => {
   const message = describeUnknownError(reason);
@@ -490,8 +583,14 @@ async function sanitizeSessionHistory(params: {
     },
   );
   const repairedTools = sanitizeToolUseResultPairing(sanitizedImages);
+
+  // Downgrade tool calls missing thought_signature if using Gemini
+  const downgraded = isGoogleModelApi(params.modelApi)
+    ? downgradeGeminiHistory(repairedTools)
+    : repairedTools;
+
   return applyGoogleTurnOrderingFix({
-    messages: repairedTools,
+    messages: downgraded,
     modelApi: params.modelApi,
     sessionManager: params.sessionManager,
     sessionId: params.sessionId,
@@ -947,7 +1046,7 @@ export function resolveEmbeddedSessionLane(key: string) {
 }
 
 function mapThinkingLevel(level?: ThinkLevel): ThinkingLevel {
-  // pi-agent-core supports "xhigh" too; Clawdbot doesn't surface it for now.
+  // pi-agent-core supports "xhigh"; Clawdbot enables it for specific models.
   if (!level) return "off";
   return level;
 }
@@ -966,6 +1065,7 @@ function resolveModel(
   provider: string,
   modelId: string,
   agentDir?: string,
+  cfg?: ClawdbotConfig,
 ): {
   model?: Model<Api>;
   error?: string;
@@ -977,6 +1077,38 @@ function resolveModel(
   const modelRegistry = discoverModels(authStorage, resolvedAgentDir);
   const model = modelRegistry.find(provider, modelId) as Model<Api> | null;
   if (!model) {
+    const providers = cfg?.models?.providers ?? {};
+    const inlineModels =
+      providers[provider]?.models ??
+      Object.values(providers)
+        .flatMap((entry) => entry?.models ?? [])
+        .map((entry) => ({ ...entry, provider }));
+    const inlineMatch = inlineModels.find((entry) => entry.id === modelId);
+    if (inlineMatch) {
+      const normalized = normalizeModelCompat(inlineMatch as Model<Api>);
+      return {
+        model: normalized,
+        authStorage,
+        modelRegistry,
+      };
+    }
+    const providerCfg = providers[provider];
+    if (providerCfg || modelId.startsWith("mock-")) {
+      const fallbackModel: Model<Api> = normalizeModelCompat({
+        id: modelId,
+        name: modelId,
+        api: providerCfg?.api ?? "openai-responses",
+        provider,
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow:
+          providerCfg?.models?.[0]?.contextWindow ?? DEFAULT_CONTEXT_TOKENS,
+        maxTokens:
+          providerCfg?.models?.[0]?.maxTokens ?? DEFAULT_CONTEXT_TOKENS,
+      } as Model<Api>);
+      return { model: fallbackModel, authStorage, modelRegistry };
+    }
     return {
       error: `Unknown model: ${provider}/${modelId}`,
       authStorage,
@@ -1028,6 +1160,7 @@ export async function compactEmbeddedPiSession(params: {
         provider,
         modelId,
         agentDir,
+        params.config,
       );
       if (!model) {
         return {
@@ -1041,7 +1174,18 @@ export async function compactEmbeddedPiSession(params: {
           model,
           cfg: params.config,
         });
-        authStorage.setRuntimeApiKey(model.provider, apiKeyInfo.apiKey);
+
+        if (model.provider === "github-copilot") {
+          const { resolveCopilotApiToken } = await import(
+            "../providers/github-copilot-token.js"
+          );
+          const copilotToken = await resolveCopilotApiToken({
+            githubToken: apiKeyInfo.apiKey,
+          });
+          authStorage.setRuntimeApiKey(model.provider, copilotToken.token);
+        } else {
+          authStorage.setRuntimeApiKey(model.provider, apiKeyInfo.apiKey);
+        }
       } catch (err) {
         return {
           ok: false,
@@ -1097,7 +1241,12 @@ export async function compactEmbeddedPiSession(params: {
           await loadWorkspaceBootstrapFiles(effectiveWorkspace),
           params.sessionKey ?? params.sessionId,
         );
-        const contextFiles = buildBootstrapContextFiles(bootstrapFiles);
+        const sessionLabel = params.sessionKey ?? params.sessionId;
+        const contextFiles = buildBootstrapContextFiles(bootstrapFiles, {
+          maxChars: resolveBootstrapMaxChars(params.config),
+          warn: (message) =>
+            log.warn(`${message} (sessionKey=${sessionLabel})`),
+        });
         const runAbortController = new AbortController();
         const tools = createClawdbotCodingTools({
           exec: {
@@ -1117,6 +1266,7 @@ export async function compactEmbeddedPiSession(params: {
           modelAuthMode: resolveModelAuthMode(model.provider, params.config),
           // No currentChannelId/currentThreadTs for compaction - not in message context
         });
+        logToolSchemasForGoogle({ tools, provider });
         const machineName = await getMachineDisplayName();
         const runtimeProvider = normalizeMessageProvider(
           params.messageProvider,
@@ -1141,7 +1291,7 @@ export async function compactEmbeddedPiSession(params: {
           sandbox,
           params.bashElevated,
         );
-        const reasoningTagHint = provider === "ollama";
+        const reasoningTagHint = isReasoningTagProvider(provider);
         const userTimezone = resolveUserTimezone(
           params.config?.agents?.defaults?.userTimezone,
         );
@@ -1181,7 +1331,9 @@ export async function compactEmbeddedPiSession(params: {
         try {
           // Pre-warm session file to bring it into OS page cache
           await prewarmSessionFile(params.sessionFile);
-          const sessionManager = SessionManager.open(params.sessionFile);
+          const sessionManager = guardSessionManager(
+            SessionManager.open(params.sessionFile),
+          );
           trackSessionManagerAccess(params.sessionFile);
           const settingsManager = SettingsManager.create(
             effectiveWorkspace,
@@ -1242,7 +1394,9 @@ export async function compactEmbeddedPiSession(params: {
               sessionManager,
               sessionId: params.sessionId,
             });
-            const validated = validateGeminiTurns(prior);
+            // Validate turn ordering for both Gemini (consecutive assistant) and Anthropic (consecutive user)
+            const validatedGemini = validateGeminiTurns(prior);
+            const validated = validateAnthropicTurns(validatedGemini);
             const limited = limitHistoryTurns(
               validated,
               getDmHistoryLimitFromSessionKey(params.sessionKey, params.config),
@@ -1262,6 +1416,7 @@ export async function compactEmbeddedPiSession(params: {
               },
             };
           } finally {
+            sessionManager.flushPendingToolResults?.();
             session.dispose();
           }
         } finally {
@@ -1317,6 +1472,7 @@ export async function runEmbeddedPiAgent(params: {
     text?: string;
     mediaUrls?: string[];
   }) => void | Promise<void>;
+  onAssistantMessageStart?: () => void | Promise<void>;
   onBlockReply?: (payload: {
     text?: string;
     mediaUrls?: string[];
@@ -1367,6 +1523,7 @@ export async function runEmbeddedPiAgent(params: {
         provider,
         modelId,
         agentDir,
+        params.config,
       );
       if (!model) {
         throw new Error(error ?? `Unknown model: ${provider}/${modelId}`);
@@ -1431,7 +1588,19 @@ export async function runEmbeddedPiAgent(params: {
 
       const applyApiKeyInfo = async (candidate?: string): Promise<void> => {
         apiKeyInfo = await resolveApiKeyForCandidate(candidate);
-        authStorage.setRuntimeApiKey(model.provider, apiKeyInfo.apiKey);
+
+        if (model.provider === "github-copilot") {
+          const { resolveCopilotApiToken } = await import(
+            "../providers/github-copilot-token.js"
+          );
+          const copilotToken = await resolveCopilotApiToken({
+            githubToken: apiKeyInfo.apiKey,
+          });
+          authStorage.setRuntimeApiKey(model.provider, copilotToken.token);
+        } else {
+          authStorage.setRuntimeApiKey(model.provider, apiKeyInfo.apiKey);
+        }
+
         lastProfileId = apiKeyInfo.profileId;
       };
 
@@ -1511,7 +1680,12 @@ export async function runEmbeddedPiAgent(params: {
             await loadWorkspaceBootstrapFiles(effectiveWorkspace),
             params.sessionKey ?? params.sessionId,
           );
-          const contextFiles = buildBootstrapContextFiles(bootstrapFiles);
+          const sessionLabel = params.sessionKey ?? params.sessionId;
+          const contextFiles = buildBootstrapContextFiles(bootstrapFiles, {
+            maxChars: resolveBootstrapMaxChars(params.config),
+            warn: (message) =>
+              log.warn(`${message} (sessionKey=${sessionLabel})`),
+          });
           // Tool schemas must be provider-compatible (OpenAI requires top-level `type: "object"`).
           // `createClawdbotCodingTools()` normalizes schemas so the session can pass them through unchanged.
           const tools = createClawdbotCodingTools({
@@ -1535,6 +1709,7 @@ export async function runEmbeddedPiAgent(params: {
             replyToMode: params.replyToMode,
             hasRepliedRef: params.hasRepliedRef,
           });
+          logToolSchemasForGoogle({ tools, provider });
           const machineName = await getMachineDisplayName();
           const runtimeInfo = {
             host: machineName,
@@ -1547,7 +1722,7 @@ export async function runEmbeddedPiAgent(params: {
             sandbox,
             params.bashElevated,
           );
-          const reasoningTagHint = provider === "ollama";
+          const reasoningTagHint = isReasoningTagProvider(provider);
           const userTimezone = resolveUserTimezone(
             params.config?.agents?.defaults?.userTimezone,
           );
@@ -1586,7 +1761,9 @@ export async function runEmbeddedPiAgent(params: {
           });
           // Pre-warm session file to bring it into OS page cache
           await prewarmSessionFile(params.sessionFile);
-          const sessionManager = SessionManager.open(params.sessionFile);
+          const sessionManager = guardSessionManager(
+            SessionManager.open(params.sessionFile),
+          );
           trackSessionManagerAccess(params.sessionFile);
           const settingsManager = SettingsManager.create(
             effectiveWorkspace,
@@ -1649,7 +1826,9 @@ export async function runEmbeddedPiAgent(params: {
               sessionManager,
               sessionId: params.sessionId,
             });
-            const validated = validateGeminiTurns(prior);
+            // Validate turn ordering for both Gemini (consecutive assistant) and Anthropic (consecutive user)
+            const validatedGemini = validateGeminiTurns(prior);
+            const validated = validateAnthropicTurns(validatedGemini);
             const limited = limitHistoryTurns(
               validated,
               getDmHistoryLimitFromSessionKey(params.sessionKey, params.config),
@@ -1658,6 +1837,7 @@ export async function runEmbeddedPiAgent(params: {
               session.agent.replaceMessages(limited);
             }
           } catch (err) {
+            sessionManager.flushPendingToolResults?.();
             session.dispose();
             await sessionLock.release();
             throw err;
@@ -1685,10 +1865,12 @@ export async function runEmbeddedPiAgent(params: {
               blockReplyBreak: params.blockReplyBreak,
               blockReplyChunking: params.blockReplyChunking,
               onPartialReply: params.onPartialReply,
+              onAssistantMessageStart: params.onAssistantMessageStart,
               onAgentEvent: params.onAgentEvent,
               enforceFinalTag: params.enforceFinalTag,
             });
           } catch (err) {
+            sessionManager.flushPendingToolResults?.();
             session.dispose();
             await sessionLock.release();
             throw err;
@@ -1786,6 +1968,7 @@ export async function runEmbeddedPiAgent(params: {
               ACTIVE_EMBEDDED_RUNS.delete(params.sessionId);
               notifyEmbeddedRunEnded(params.sessionId);
             }
+            sessionManager.flushPendingToolResults?.();
             session.dispose();
             await sessionLock.release();
             params.abortSignal?.removeEventListener?.("abort", onAbort);

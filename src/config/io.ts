@@ -49,6 +49,7 @@ const SHELL_ENV_EXPECTED_KEYS = [
   "ZAI_API_KEY",
   "OPENROUTER_API_KEY",
   "MINIMAX_API_KEY",
+  "SYNTHETIC_API_KEY",
   "ELEVENLABS_API_KEY",
   "TELEGRAM_BOT_TOKEN",
   "DISCORD_BOT_TOKEN",
@@ -287,6 +288,10 @@ export function createConfigIO(overrides: ConfigIoDeps = {}) {
       }
 
       const legacyIssues = findLegacyConfigIssues(resolved);
+      const resolvedConfig =
+        typeof resolved === "object" && resolved !== null
+          ? (resolved as ClawdbotConfig)
+          : {};
 
       const validated = validateConfigObject(resolved);
       if (!validated.ok) {
@@ -296,7 +301,7 @@ export function createConfigIO(overrides: ConfigIoDeps = {}) {
           raw,
           parsed: parsedRes.parsed,
           valid: false,
-          config: {},
+          config: resolvedConfig,
           issues: validated.issues,
           legacyIssues,
         };

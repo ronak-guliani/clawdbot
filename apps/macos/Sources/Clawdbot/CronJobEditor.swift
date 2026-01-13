@@ -27,9 +27,11 @@ struct CronJobEditor: View {
 
     @State var name: String = ""
     @State var description: String = ""
+    @State var agentId: String = ""
     @State var enabled: Bool = true
     @State var sessionTarget: CronSessionTarget = .main
     @State var wakeMode: CronWakeMode = .nextHeartbeat
+    @State var deleteAfterRun: Bool = false
 
     enum ScheduleKind: String, CaseIterable, Identifiable { case at, every, cron; var id: String { rawValue } }
     @State var scheduleKind: ScheduleKind = .every
@@ -74,6 +76,12 @@ struct CronJobEditor: View {
                             GridRow {
                                 self.gridLabel("Description")
                                 TextField("Optional notes", text: self.$description)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(maxWidth: .infinity)
+                            }
+                            GridRow {
+                                self.gridLabel("Agent ID")
+                                TextField("Optional (default agent)", text: self.$agentId)
                                     .textFieldStyle(.roundedBorder)
                                     .frame(maxWidth: .infinity)
                             }
@@ -148,6 +156,11 @@ struct CronJobEditor: View {
                                         displayedComponents: [.date, .hourAndMinute])
                                         .labelsHidden()
                                         .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                GridRow {
+                                    self.gridLabel("Auto-delete")
+                                    Toggle("Delete after successful run", isOn: self.$deleteAfterRun)
+                                        .toggleStyle(.switch)
                                 }
                             case .every:
                                 GridRow {

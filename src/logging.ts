@@ -116,6 +116,7 @@ function levelToMinLevel(level: Level): number {
 export function isFileLogLevelEnabled(level: LogLevel): boolean {
   const settings = cachedSettings ?? resolveSettings();
   if (!cachedSettings) cachedSettings = settings;
+  if (settings.level === "silent") return false;
   return levelToMinLevel(level) <= levelToMinLevel(settings.level);
 }
 
@@ -389,6 +390,7 @@ type SubsystemLogger = {
 };
 
 function shouldLogToConsole(level: Level, settings: ConsoleSettings): boolean {
+  if (settings.level === "silent") return false;
   const current = levelToMinLevel(level);
   const min = levelToMinLevel(settings.level);
   return current <= min;
@@ -468,6 +470,41 @@ function formatSubsystemForConsole(subsystem: string): string {
   return parts.join("/");
 }
 
+export function stripRedundantSubsystemPrefixForConsole(
+  message: string,
+  displaySubsystem: string,
+): string {
+  if (!displaySubsystem) return message;
+
+  // Common duplication: "[discord] discord: ..." (when a message manually includes the subsystem tag).
+  if (message.startsWith("[")) {
+    const closeIdx = message.indexOf("]");
+    if (closeIdx > 1) {
+      const bracketTag = message.slice(1, closeIdx);
+      if (bracketTag.toLowerCase() === displaySubsystem.toLowerCase()) {
+        let i = closeIdx + 1;
+        while (message[i] === " ") i += 1;
+        return message.slice(i);
+      }
+    }
+  }
+
+  const prefix = message.slice(0, displaySubsystem.length);
+  if (prefix.toLowerCase() !== displaySubsystem.toLowerCase()) return message;
+
+  const next = message.slice(
+    displaySubsystem.length,
+    displaySubsystem.length + 1,
+  );
+  if (next !== ":" && next !== " ") return message;
+
+  let i = displaySubsystem.length;
+  while (message[i] === " ") i += 1;
+  if (message[i] === ":") i += 1;
+  while (message[i] === " ") i += 1;
+  return message.slice(i);
+}
+
 function formatConsoleLine(opts: {
   level: Level;
   subsystem: string;
@@ -499,13 +536,17 @@ function formatConsoleLine(opts: {
         : opts.level === "debug" || opts.level === "trace"
           ? color.gray
           : color.cyan;
+  const displayMessage = stripRedundantSubsystemPrefixForConsole(
+    opts.message,
+    displaySubsystem,
+  );
   const time =
     opts.style === "pretty"
       ? color.gray(new Date().toISOString().slice(11, 19))
       : "";
   const prefixToken = prefixColor(prefix);
   const head = [time, prefixToken].filter(Boolean).join(" ");
-  return `${head} ${levelColor(opts.message)}`;
+  return `${head} ${levelColor(displayMessage)}`;
 }
 
 function writeConsoleLine(level: Level, line: string) {

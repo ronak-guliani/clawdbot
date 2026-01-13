@@ -25,7 +25,11 @@ import {
 import { resolveGatewayLaunchAgentLabel } from "../daemon/constants.js";
 import { readLastGatewayErrorLine } from "../daemon/diagnostics.js";
 import { resolveGatewayProgramArguments } from "../daemon/program-args.js";
-import { resolvePreferredNodePath } from "../daemon/runtime-paths.js";
+import {
+  renderSystemNodeWarning,
+  resolvePreferredNodePath,
+  resolveSystemNodeInfo,
+} from "../daemon/runtime-paths.js";
 import { resolveGatewayService } from "../daemon/service.js";
 import { buildServiceEnvironment } from "../daemon/service-env.js";
 import { buildGatewayConnectionDetails, callGateway } from "../gateway/call.js";
@@ -76,6 +80,7 @@ import {
   detectLegacyStateMigrations,
   runLegacyStateMigrations,
 } from "./doctor-state-migrations.js";
+import { maybeRepairUiProtocolFreshness } from "./doctor-ui.js";
 import {
   detectLegacyWorkspaceDirs,
   formatLegacyWorkspaceWarning,
@@ -243,6 +248,8 @@ export async function doctorCommand(
       }
     }
   }
+
+  await maybeRepairUiProtocolFreshness(runtime, prompter);
 
   await maybeMigrateLegacyConfigFile(runtime);
 
@@ -443,6 +450,7 @@ export async function doctorCommand(
     let loaded = false;
     try {
       loaded = await service.isLoaded({
+        env: process.env,
         profile: process.env.CLAWDBOT_PROFILE,
       });
     } catch {
@@ -568,6 +576,7 @@ export async function doctorCommand(
   if (!healthOk) {
     const service = resolveGatewayService();
     const loaded = await service.isLoaded({
+      env: process.env,
       profile: process.env.CLAWDBOT_PROFILE,
     });
     let serviceRuntime:
@@ -621,6 +630,16 @@ export async function doctorCommand(
               runtime: daemonRuntime,
               nodePath,
             });
+          if (daemonRuntime === "node") {
+            const systemNode = await resolveSystemNodeInfo({
+              env: process.env,
+            });
+            const warning = renderSystemNodeWarning(
+              systemNode,
+              programArguments[0],
+            );
+            if (warning) note(warning, "Gateway runtime");
+          }
           const environment = buildServiceEnvironment({
             env: process.env,
             port,
@@ -659,6 +678,7 @@ export async function doctorCommand(
         });
         if (start) {
           await service.restart({
+            env: process.env,
             profile: process.env.CLAWDBOT_PROFILE,
             stdout: process.stdout,
           });
@@ -681,6 +701,7 @@ export async function doctorCommand(
         });
         if (restart) {
           await service.restart({
+            env: process.env,
             profile: process.env.CLAWDBOT_PROFILE,
             stdout: process.stdout,
           });

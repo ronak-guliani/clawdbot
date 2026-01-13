@@ -16,7 +16,7 @@ describe("subscribeEmbeddedPiSession", () => {
     { tag: "thought", open: "<thought>", close: "</thought>" },
     { tag: "antthinking", open: "<antthinking>", close: "</antthinking>" },
   ] as const;
-  it("filters to <final> and falls back when tags are malformed", () => {
+  it("filters to <final> and suppresses output without a start tag", () => {
     let handler: ((evt: unknown) => void) | undefined;
     const session: StubSession = {
       subscribe: (fn) => {
@@ -38,6 +38,7 @@ describe("subscribeEmbeddedPiSession", () => {
       onAgentEvent,
     });
 
+    handler?.({ type: "message_start", message: { role: "assistant" } });
     handler?.({
       type: "message_update",
       message: { role: "assistant" },
@@ -53,11 +54,7 @@ describe("subscribeEmbeddedPiSession", () => {
 
     onPartialReply.mockReset();
 
-    handler?.({
-      type: "message_end",
-      message: { role: "assistant" },
-    });
-
+    handler?.({ type: "message_start", message: { role: "assistant" } });
     handler?.({
       type: "message_update",
       message: { role: "assistant" },
@@ -67,8 +64,7 @@ describe("subscribeEmbeddedPiSession", () => {
       },
     });
 
-    const secondPayload = onPartialReply.mock.calls[0][0];
-    expect(secondPayload.text).toContain("Oops no start");
+    expect(onPartialReply).not.toHaveBeenCalled();
   });
 
   it("does not require <final> when enforcement is off", () => {
@@ -168,7 +164,7 @@ describe("subscribeEmbeddedPiSession", () => {
 
     expect(onBlockReply).toHaveBeenCalledTimes(2);
     expect(onBlockReply.mock.calls[0][0].text).toBe(
-      "Reasoning:\nBecause it helps",
+      "Reasoning:\n_Because it helps_",
     );
     expect(onBlockReply.mock.calls[1][0].text).toBe("Final answer");
   });
@@ -213,7 +209,7 @@ describe("subscribeEmbeddedPiSession", () => {
 
     expect(onBlockReply).toHaveBeenCalledTimes(2);
     expect(onBlockReply.mock.calls[0][0].text).toBe(
-      "Reasoning:\nBecause it helps",
+      "Reasoning:\n_Because it helps_",
     );
     expect(onBlockReply.mock.calls[1][0].text).toBe("Final answer");
 
@@ -287,7 +283,7 @@ describe("subscribeEmbeddedPiSession", () => {
     const streamTexts = onReasoningStream.mock.calls
       .map((call) => call[0]?.text)
       .filter((value): value is string => typeof value === "string");
-    expect(streamTexts.at(-1)).toBe("Reasoning:\nBecause it helps");
+    expect(streamTexts.at(-1)).toBe("Reasoning:\n_Because it helps_");
 
     expect(assistantMessage.content).toEqual([
       { type: "thinking", thinking: "Because it helps" },

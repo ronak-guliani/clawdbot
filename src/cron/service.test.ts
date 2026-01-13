@@ -71,10 +71,52 @@ describe("CronService", () => {
     const jobs = await cron.list({ includeDisabled: true });
     const updated = jobs.find((j) => j.id === job.id);
     expect(updated?.enabled).toBe(false);
-    expect(enqueueSystemEvent).toHaveBeenCalledWith("hello");
+    expect(enqueueSystemEvent).toHaveBeenCalledWith("hello", {
+      agentId: undefined,
+    });
     expect(requestHeartbeatNow).toHaveBeenCalled();
 
     await cron.list({ includeDisabled: true });
+    cron.stop();
+    await store.cleanup();
+  });
+
+  it("runs a one-shot job and deletes it after success when requested", async () => {
+    const store = await makeStorePath();
+    const enqueueSystemEvent = vi.fn();
+    const requestHeartbeatNow = vi.fn();
+
+    const cron = new CronService({
+      storePath: store.storePath,
+      cronEnabled: true,
+      log: noopLogger,
+      enqueueSystemEvent,
+      requestHeartbeatNow,
+      runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" })),
+    });
+
+    await cron.start();
+    const atMs = Date.parse("2025-12-13T00:00:02.000Z");
+    const job = await cron.add({
+      name: "one-shot delete",
+      enabled: true,
+      deleteAfterRun: true,
+      schedule: { kind: "at", atMs },
+      sessionTarget: "main",
+      wakeMode: "now",
+      payload: { kind: "systemEvent", text: "hello" },
+    });
+
+    vi.setSystemTime(new Date("2025-12-13T00:00:02.000Z"));
+    await vi.runOnlyPendingTimersAsync();
+
+    const jobs = await cron.list({ includeDisabled: true });
+    expect(jobs.find((j) => j.id === job.id)).toBeUndefined();
+    expect(enqueueSystemEvent).toHaveBeenCalledWith("hello", {
+      agentId: undefined,
+    });
+    expect(requestHeartbeatNow).toHaveBeenCalled();
+
     cron.stop();
     await store.cleanup();
   });
@@ -128,7 +170,9 @@ describe("CronService", () => {
 
     expect(runHeartbeatOnce).toHaveBeenCalledTimes(1);
     expect(requestHeartbeatNow).not.toHaveBeenCalled();
-    expect(enqueueSystemEvent).toHaveBeenCalledWith("hello");
+    expect(enqueueSystemEvent).toHaveBeenCalledWith("hello", {
+      agentId: undefined,
+    });
     expect(job.state.runningAtMs).toBeTypeOf("number");
 
     resolveHeartbeat?.({ status: "ran", durationMs: 123 });
@@ -175,7 +219,9 @@ describe("CronService", () => {
 
     await cron.list({ includeDisabled: true });
     expect(runIsolatedAgentJob).toHaveBeenCalledTimes(1);
-    expect(enqueueSystemEvent).toHaveBeenCalledWith("Cron: done");
+    expect(enqueueSystemEvent).toHaveBeenCalledWith("Cron: done", {
+      agentId: undefined,
+    });
     expect(requestHeartbeatNow).toHaveBeenCalled();
     cron.stop();
     await store.cleanup();
@@ -318,6 +364,7 @@ describe("CronService", () => {
 
     expect(enqueueSystemEvent).toHaveBeenCalledWith(
       "Cron (error): last output",
+      { agentId: undefined },
     );
     expect(requestHeartbeatNow).toHaveBeenCalled();
     cron.stop();

@@ -1352,9 +1352,11 @@ public struct SkillsUpdateParams: Codable, Sendable {
 
 public struct CronJob: Codable, Sendable {
     public let id: String
+    public let agentid: String?
     public let name: String
     public let description: String?
     public let enabled: Bool
+    public let deleteafterrun: Bool?
     public let createdatms: Int
     public let updatedatms: Int
     public let schedule: AnyCodable
@@ -1366,9 +1368,11 @@ public struct CronJob: Codable, Sendable {
 
     public init(
         id: String,
+        agentid: String?,
         name: String,
         description: String?,
         enabled: Bool,
+        deleteafterrun: Bool?,
         createdatms: Int,
         updatedatms: Int,
         schedule: AnyCodable,
@@ -1379,9 +1383,11 @@ public struct CronJob: Codable, Sendable {
         state: [String: AnyCodable]
     ) {
         self.id = id
+        self.agentid = agentid
         self.name = name
         self.description = description
         self.enabled = enabled
+        self.deleteafterrun = deleteafterrun
         self.createdatms = createdatms
         self.updatedatms = updatedatms
         self.schedule = schedule
@@ -1393,9 +1399,11 @@ public struct CronJob: Codable, Sendable {
     }
     private enum CodingKeys: String, CodingKey {
         case id
+        case agentid = "agentId"
         case name
         case description
         case enabled
+        case deleteafterrun = "deleteAfterRun"
         case createdatms = "createdAtMs"
         case updatedatms = "updatedAtMs"
         case schedule
@@ -1425,8 +1433,10 @@ public struct CronStatusParams: Codable, Sendable {
 
 public struct CronAddParams: Codable, Sendable {
     public let name: String
+    public let agentid: AnyCodable?
     public let description: String?
     public let enabled: Bool?
+    public let deleteafterrun: Bool?
     public let schedule: AnyCodable
     public let sessiontarget: AnyCodable
     public let wakemode: AnyCodable
@@ -1435,8 +1445,10 @@ public struct CronAddParams: Codable, Sendable {
 
     public init(
         name: String,
+        agentid: AnyCodable?,
         description: String?,
         enabled: Bool?,
+        deleteafterrun: Bool?,
         schedule: AnyCodable,
         sessiontarget: AnyCodable,
         wakemode: AnyCodable,
@@ -1444,8 +1456,10 @@ public struct CronAddParams: Codable, Sendable {
         isolation: [String: AnyCodable]?
     ) {
         self.name = name
+        self.agentid = agentid
         self.description = description
         self.enabled = enabled
+        self.deleteafterrun = deleteafterrun
         self.schedule = schedule
         self.sessiontarget = sessiontarget
         self.wakemode = wakemode
@@ -1454,77 +1468,15 @@ public struct CronAddParams: Codable, Sendable {
     }
     private enum CodingKeys: String, CodingKey {
         case name
+        case agentid = "agentId"
         case description
         case enabled
+        case deleteafterrun = "deleteAfterRun"
         case schedule
         case sessiontarget = "sessionTarget"
         case wakemode = "wakeMode"
         case payload
         case isolation
-    }
-}
-
-public struct CronUpdateParams: Codable, Sendable {
-    public let id: String
-    public let patch: [String: AnyCodable]
-
-    public init(
-        id: String,
-        patch: [String: AnyCodable]
-    ) {
-        self.id = id
-        self.patch = patch
-    }
-    private enum CodingKeys: String, CodingKey {
-        case id
-        case patch
-    }
-}
-
-public struct CronRemoveParams: Codable, Sendable {
-    public let id: String
-
-    public init(
-        id: String
-    ) {
-        self.id = id
-    }
-    private enum CodingKeys: String, CodingKey {
-        case id
-    }
-}
-
-public struct CronRunParams: Codable, Sendable {
-    public let id: String
-    public let mode: AnyCodable?
-
-    public init(
-        id: String,
-        mode: AnyCodable?
-    ) {
-        self.id = id
-        self.mode = mode
-    }
-    private enum CodingKeys: String, CodingKey {
-        case id
-        case mode
-    }
-}
-
-public struct CronRunsParams: Codable, Sendable {
-    public let id: String
-    public let limit: Int?
-
-    public init(
-        id: String,
-        limit: Int?
-    ) {
-        self.id = id
-        self.limit = limit
-    }
-    private enum CodingKeys: String, CodingKey {
-        case id
-        case limit
     }
 }
 

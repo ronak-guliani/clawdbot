@@ -41,7 +41,7 @@ The wizard starts with **QuickStart** (defaults) vs **Advanced** (full control).
 ## What the wizard does
 
 **Local mode (default)** walks you through:
-- Model/auth (OpenAI Code (Codex) subscription OAuth, Anthropic API key (recommended) or `claude setup-token`, plus MiniMax/GLM options)
+- Model/auth (OpenAI Code (Codex) subscription OAuth, Anthropic API key (recommended) or `claude setup-token`, plus MiniMax/GLM/Moonshot options)
 - Workspace location + bootstrap files
 - Gateway settings (port/bind/auth/tailscale)
 - Providers (Telegram, WhatsApp, Discord, Signal)
@@ -64,6 +64,8 @@ Tip: `--json` does **not** imply non-interactive mode. Use `--non-interactive` (
 
 1) **Existing config detection**
    - If `~/.clawdbot/clawdbot.json` exists, choose **Keep / Modify / Reset**.
+   - If the config is invalid or contains legacy keys, the wizard stops and asks
+     you to run `clawdbot doctor` before continuing.
    - Reset uses `trash` (never `rm`) and offers scopes:
      - Config only
      - Config + credentials + sessions
@@ -80,8 +82,12 @@ Tip: `--json` does **not** imply non-interactive mode. Use `--non-interactive` (
    - **OpenAI API key**: uses `OPENAI_API_KEY` if present or prompts for a key, then saves it to `~/.clawdbot/.env` so launchd can read it.
    - **OpenCode Zen (multi-model proxy)**: prompts for `OPENCODE_API_KEY` (or `OPENCODE_ZEN_API_KEY`, get it at https://opencode.ai/auth).
    - **API key**: stores the key for you.
-   - **MiniMax M2.1**: config is auto‑written.
+   - **MiniMax M2.1**: config is auto-written.
    - More detail: [MiniMax](/providers/minimax)
+   - **Synthetic (Anthropic-compatible)**: prompts for `SYNTHETIC_API_KEY`.
+   - More detail: [Synthetic](/providers/synthetic)
+   - **Moonshot (Kimi K2)**: config is auto-written.
+   - More detail: [Moonshot AI](/providers/moonshot)
    - **Skip**: no auth configured yet.
    - Pick a default model from detected options (or enter provider/model manually).
    - Wizard runs a model check and warns if the configured model is unknown or missing auth.
@@ -195,6 +201,28 @@ clawdbot onboard --non-interactive \
   --mode local \
   --auth-choice zai-api-key \
   --zai-api-key "$ZAI_API_KEY" \
+  --gateway-port 18789 \
+  --gateway-bind loopback
+```
+
+Moonshot example:
+
+```bash
+clawdbot onboard --non-interactive \
+  --mode local \
+  --auth-choice moonshot-api-key \
+  --moonshot-api-key "$MOONSHOT_API_KEY" \
+  --gateway-port 18789 \
+  --gateway-bind loopback
+```
+
+Synthetic example:
+
+```bash
+clawdbot onboard --non-interactive \
+  --mode local \
+  --auth-choice synthetic-api-key \
+  --synthetic-api-key "$SYNTHETIC_API_KEY" \
   --gateway-port 18789 \
   --gateway-bind loopback
 ```

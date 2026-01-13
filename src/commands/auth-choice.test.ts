@@ -6,7 +6,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { RuntimeEnv } from "../runtime.js";
 import type { WizardPrompter } from "../wizard/prompts.js";
-import { applyAuthChoice } from "./auth-choice.js";
+import {
+  applyAuthChoice,
+  resolvePreferredProviderForAuthChoice,
+} from "./auth-choice.js";
+import type { AuthChoice } from "./onboard-types.js";
+
+vi.mock("../providers/github-copilot-auth.js", () => ({
+  githubCopilotLoginCommand: vi.fn(async () => {}),
+}));
 
 const noopAsync = async () => {};
 const noop = () => {};
@@ -16,9 +24,12 @@ describe("applyAuthChoice", () => {
   const previousAgentDir = process.env.CLAWDBOT_AGENT_DIR;
   const previousPiAgentDir = process.env.PI_CODING_AGENT_DIR;
   const previousOpenrouterKey = process.env.OPENROUTER_API_KEY;
+  const previousSshTty = process.env.SSH_TTY;
+  const previousChutesClientId = process.env.CHUTES_CLIENT_ID;
   let tempStateDir: string | null = null;
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
     if (tempStateDir) {
       await fs.rm(tempStateDir, { recursive: true, force: true });
       tempStateDir = null;
@@ -42,6 +53,16 @@ describe("applyAuthChoice", () => {
       delete process.env.OPENROUTER_API_KEY;
     } else {
       process.env.OPENROUTER_API_KEY = previousOpenrouterKey;
+    }
+    if (previousSshTty === undefined) {
+      delete process.env.SSH_TTY;
+    } else {
+      process.env.SSH_TTY = previousSshTty;
+    }
+    if (previousChutesClientId === undefined) {
+      delete process.env.CHUTES_CLIENT_ID;
+    } else {
+      process.env.CHUTES_CLIENT_ID = previousChutesClientId;
     }
   });
 
@@ -85,13 +106,6 @@ describe("applyAuthChoice", () => {
     expect(text).toHaveBeenCalledWith(
       expect.objectContaining({ message: "Enter MiniMax API key" }),
     );
-    expect(result.config.models?.providers?.minimax).toMatchObject({
-      baseUrl: "https://api.minimax.io/anthropic",
-      api: "anthropic-messages",
-    });
-    expect(result.config.agents?.defaults?.model).toMatchObject({
-      primary: "minimax/MiniMax-M2.1",
-    });
     expect(result.config.auth?.profiles?.["minimax:default"]).toMatchObject({
       provider: "minimax",
       mode: "api_key",
@@ -111,13 +125,13 @@ describe("applyAuthChoice", () => {
     expect(parsed.profiles?.["minimax:default"]?.key).toBe("sk-minimax-test");
   });
 
-  it("configures MiniMax M2.1 via the Anthropic-compatible endpoint", async () => {
+  it("prompts and writes Synthetic API key when selecting synthetic-api-key", async () => {
     tempStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-auth-"));
     process.env.CLAWDBOT_STATE_DIR = tempStateDir;
     process.env.CLAWDBOT_AGENT_DIR = path.join(tempStateDir, "agent");
     process.env.PI_CODING_AGENT_DIR = process.env.CLAWDBOT_AGENT_DIR;
 
-    const text = vi.fn().mockResolvedValue("sk-minimax-test");
+    const text = vi.fn().mockResolvedValue("sk-synthetic-test");
     const select: WizardPrompter["select"] = vi.fn(
       async (params) => params.options[0]?.value as never,
     );
@@ -141,7 +155,7 @@ describe("applyAuthChoice", () => {
     };
 
     const result = await applyAuthChoice({
-      authChoice: "minimax-api",
+      authChoice: "synthetic-api-key",
       config: {},
       prompter,
       runtime,
@@ -149,14 +163,11 @@ describe("applyAuthChoice", () => {
     });
 
     expect(text).toHaveBeenCalledWith(
-      expect.objectContaining({ message: "Enter MiniMax API key" }),
+      expect.objectContaining({ message: "Enter Synthetic API key" }),
     );
-    expect(result.config.models?.providers?.minimax).toMatchObject({
-      baseUrl: "https://api.minimax.io/anthropic",
-      api: "anthropic-messages",
-    });
-    expect(result.config.agents?.defaults?.model).toMatchObject({
-      primary: "minimax/MiniMax-M2.1",
+    expect(result.config.auth?.profiles?.["synthetic:default"]).toMatchObject({
+      provider: "synthetic",
+      mode: "api_key",
     });
 
     const authProfilePath = path.join(
@@ -170,8 +181,56 @@ describe("applyAuthChoice", () => {
     const parsed = JSON.parse(raw) as {
       profiles?: Record<string, { key?: string }>;
     };
-    expect(parsed.profiles?.["minimax:default"]?.key).toBe("sk-minimax-test");
+    expect(parsed.profiles?.["synthetic:default"]?.key).toBe(
+      "sk-synthetic-test",
+    );
   });
+
+  it("sets default model when selecting github-copilot", async () => {
+    tempStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-auth-"));
+    process.env.CLAWDBOT_STATE_DIR = tempStateDir;
+    process.env.CLAWDBOT_AGENT_DIR = path.join(tempStateDir, "agent");
+    process.env.PI_CODING_AGENT_DIR = process.env.CLAWDBOT_AGENT_DIR;
+
+    const prompter: WizardPrompter = {
+      intro: vi.fn(noopAsync),
+      outro: vi.fn(noopAsync),
+      note: vi.fn(noopAsync),
+      select: vi.fn(async () => "" as never),
+      multiselect: vi.fn(async () => []),
+      text: vi.fn(async () => ""),
+      confirm: vi.fn(async () => false),
+      progress: vi.fn(() => ({ update: noop, stop: noop })),
+    };
+    const runtime: RuntimeEnv = {
+      log: vi.fn(),
+      error: vi.fn(),
+      exit: vi.fn((code: number) => {
+        throw new Error(`exit:${code}`);
+      }),
+    };
+
+    const previousTty = process.stdin.isTTY;
+    const stdin = process.stdin as unknown as { isTTY?: boolean };
+    stdin.isTTY = true;
+
+    try {
+      const result = await applyAuthChoice({
+        authChoice: "github-copilot",
+        config: {},
+        prompter,
+        runtime,
+        setDefaultModel: true,
+      });
+
+      expect(result.config.agents?.defaults?.model?.primary).toBe(
+        "github-copilot/gpt-4o",
+      );
+    } finally {
+      stdin.isTTY = previousTty;
+    }
+  });
+
   it("does not override the default model when selecting opencode-zen without setDefaultModel", async () => {
     tempStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-auth-"));
     process.env.CLAWDBOT_STATE_DIR = tempStateDir;
@@ -294,5 +353,112 @@ describe("applyAuthChoice", () => {
     );
 
     delete process.env.OPENROUTER_API_KEY;
+  });
+
+  it("writes Chutes OAuth credentials when selecting chutes (remote/manual)", async () => {
+    tempStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-auth-"));
+    process.env.CLAWDBOT_STATE_DIR = tempStateDir;
+    process.env.CLAWDBOT_AGENT_DIR = path.join(tempStateDir, "agent");
+    process.env.PI_CODING_AGENT_DIR = process.env.CLAWDBOT_AGENT_DIR;
+    process.env.SSH_TTY = "1";
+    process.env.CHUTES_CLIENT_ID = "cid_test";
+
+    const fetchSpy = vi.fn(async (input: string | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "https://api.chutes.ai/idp/token") {
+        return new Response(
+          JSON.stringify({
+            access_token: "at_test",
+            refresh_token: "rt_test",
+            expires_in: 3600,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url === "https://api.chutes.ai/idp/userinfo") {
+        return new Response(JSON.stringify({ username: "remote-user" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const text = vi.fn().mockResolvedValue("code_manual");
+    const select: WizardPrompter["select"] = vi.fn(
+      async (params) => params.options[0]?.value as never,
+    );
+    const multiselect: WizardPrompter["multiselect"] = vi.fn(async () => []);
+    const prompter: WizardPrompter = {
+      intro: vi.fn(noopAsync),
+      outro: vi.fn(noopAsync),
+      note: vi.fn(noopAsync),
+      select,
+      multiselect,
+      text,
+      confirm: vi.fn(async () => false),
+      progress: vi.fn(() => ({ update: noop, stop: noop })),
+    };
+    const runtime: RuntimeEnv = {
+      log: vi.fn(),
+      error: vi.fn(),
+      exit: vi.fn((code: number) => {
+        throw new Error(`exit:${code}`);
+      }),
+    };
+
+    const result = await applyAuthChoice({
+      authChoice: "chutes",
+      config: {},
+      prompter,
+      runtime,
+      setDefaultModel: false,
+    });
+
+    expect(text).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "Paste the redirect URL (or authorization code)",
+      }),
+    );
+    expect(result.config.auth?.profiles?.["chutes:remote-user"]).toMatchObject({
+      provider: "chutes",
+      mode: "oauth",
+    });
+
+    const authProfilePath = path.join(
+      tempStateDir,
+      "agents",
+      "main",
+      "agent",
+      "auth-profiles.json",
+    );
+    const raw = await fs.readFile(authProfilePath, "utf8");
+    const parsed = JSON.parse(raw) as {
+      profiles?: Record<
+        string,
+        { provider?: string; access?: string; refresh?: string; email?: string }
+      >;
+    };
+    expect(parsed.profiles?.["chutes:remote-user"]).toMatchObject({
+      provider: "chutes",
+      access: "at_test",
+      refresh: "rt_test",
+      email: "remote-user",
+    });
+  });
+});
+
+describe("resolvePreferredProviderForAuthChoice", () => {
+  it("maps github-copilot to the provider", () => {
+    expect(resolvePreferredProviderForAuthChoice("github-copilot")).toBe(
+      "github-copilot",
+    );
+  });
+
+  it("returns undefined for unknown choices", () => {
+    expect(
+      resolvePreferredProviderForAuthChoice("unknown" as AuthChoice),
+    ).toBeUndefined();
   });
 });

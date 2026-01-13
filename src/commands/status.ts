@@ -336,7 +336,10 @@ async function getDaemonStatusSummary(): Promise<{
     const service = resolveGatewayService();
     const [loaded, runtime, command] = await Promise.all([
       service
-        .isLoaded({ profile: process.env.CLAWDBOT_PROFILE })
+        .isLoaded({
+          env: process.env,
+          profile: process.env.CLAWDBOT_PROFILE,
+        })
         .catch(() => false),
       service.readRuntime(process.env).catch(() => undefined),
       service.readCommand(process.env).catch(() => null),
@@ -818,6 +821,7 @@ export async function statusCommand(
     const links = resolveControlUiLinks({
       port: resolveGatewayPort(cfg),
       bind: cfg.gateway?.bind,
+      customBindHost: cfg.gateway?.customBindHost,
       basePath: cfg.gateway?.controlUi?.basePath,
     });
     return links.httpUrl;

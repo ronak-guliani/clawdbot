@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 import type { HeartbeatRunResult } from "../infra/heartbeat-wake.js";
+import { normalizeAgentId } from "../routing/session-key.js";
 import { truncateUtf16Safe } from "../utils.js";
 import { migrateLegacyCronPayload } from "./payload-migration.js";
 import { computeNextRunAtMs } from "./schedule.js";
@@ -36,7 +37,7 @@ export type CronServiceDeps = {
   log: Logger;
   storePath: string;
   cronEnabled: boolean;
-  enqueueSystemEvent: (text: string) => void;
+  enqueueSystemEvent: (text: string, opts?: { agentId?: string }) => void;
   requestHeartbeatNow: (opts?: { reason?: string }) => void;
   runHeartbeatOnce?: (opts?: {
     reason?: string;
@@ -72,6 +73,13 @@ function normalizeOptionalText(raw: unknown) {
 function truncateText(input: string, maxLen: number) {
   if (input.length <= maxLen) return input;
   return `${truncateUtf16Safe(input, Math.max(0, maxLen - 1)).trimEnd()}…`;
+}
+
+function normalizeOptionalAgentId(raw: unknown) {
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  return normalizeAgentId(trimmed);
 }
 
 function inferLegacyName(job: {
@@ -181,9 +189,11 @@ export class CronService {
       const id = crypto.randomUUID();
       const job: CronJob = {
         id,
+        agentId: normalizeOptionalAgentId(input.agentId),
         name: normalizeRequiredName(input.name),
         description: normalizeOptionalText(input.description),
         enabled: input.enabled !== false,
+        deleteAfterRun: input.deleteAfterRun,
         createdAtMs: now,
         updatedAtMs: now,
         schedule: input.schedule,
@@ -220,12 +230,19 @@ export class CronService {
       if ("description" in patch)
         job.description = normalizeOptionalText(patch.description);
       if (typeof patch.enabled === "boolean") job.enabled = patch.enabled;
+      if (typeof patch.deleteAfterRun === "boolean")
+        job.deleteAfterRun = patch.deleteAfterRun;
       if (patch.schedule) job.schedule = patch.schedule;
       if (patch.sessionTarget) job.sessionTarget = patch.sessionTarget;
       if (patch.wakeMode) job.wakeMode = patch.wakeMode;
       if (patch.payload) job.payload = patch.payload;
       if (patch.isolation) job.isolation = patch.isolation;
       if (patch.state) job.state = { ...job.state, ...patch.state };
+      if ("agentId" in patch) {
+        job.agentId = normalizeOptionalAgentId(
+          (patch as { agentId?: unknown }).agentId,
+        );
+      }
 
       job.updatedAtMs = now;
       this.assertSupportedJobSpec(job);
@@ -458,6 +475,8 @@ export class CronService {
     job.state.lastError = undefined;
     this.emit({ jobId: job.id, action: "started", runAtMs: startedAt });
 
+    let deleted = false;
+
     const finish = async (
       status: "ok" | "error" | "skipped",
       err?: string,
@@ -470,14 +489,21 @@ export class CronService {
       job.state.lastDurationMs = Math.max(0, endedAt - startedAt);
       job.state.lastError = err;
 
-      if (job.schedule.kind === "at" && status === "ok") {
-        // One-shot job completed successfully; disable it.
-        job.enabled = false;
-        job.state.nextRunAtMs = undefined;
-      } else if (job.enabled) {
-        job.state.nextRunAtMs = this.computeJobNextRunAtMs(job, endedAt);
-      } else {
-        job.state.nextRunAtMs = undefined;
+      const shouldDelete =
+        job.schedule.kind === "at" &&
+        status === "ok" &&
+        job.deleteAfterRun === true;
+
+      if (!shouldDelete) {
+        if (job.schedule.kind === "at" && status === "ok") {
+          // One-shot job completed successfully; disable it.
+          job.enabled = false;
+          job.state.nextRunAtMs = undefined;
+        } else if (job.enabled) {
+          job.state.nextRunAtMs = this.computeJobNextRunAtMs(job, endedAt);
+        } else {
+          job.state.nextRunAtMs = undefined;
+        }
       }
 
       this.emit({
@@ -491,11 +517,19 @@ export class CronService {
         nextRunAtMs: job.state.nextRunAtMs,
       });
 
+      if (shouldDelete && this.store) {
+        this.store.jobs = this.store.jobs.filter((j) => j.id !== job.id);
+        deleted = true;
+        this.emit({ jobId: job.id, action: "removed" });
+      }
+
       if (job.sessionTarget === "isolated") {
         const prefix = job.isolation?.postToMainPrefix?.trim() || "Cron";
         const body = (summary ?? err ?? status).trim();
         const statusPrefix = status === "ok" ? prefix : `${prefix} (${status})`;
-        this.deps.enqueueSystemEvent(`${statusPrefix}: ${body}`);
+        this.deps.enqueueSystemEvent(`${statusPrefix}: ${body}`, {
+          agentId: job.agentId,
+        });
         if (job.wakeMode === "now") {
           this.deps.requestHeartbeatNow({ reason: `cron:${job.id}:post` });
         }
@@ -519,7 +553,7 @@ export class CronService {
           );
           return;
         }
-        this.deps.enqueueSystemEvent(text);
+        this.deps.enqueueSystemEvent(text, { agentId: job.agentId });
         if (job.wakeMode === "now" && this.deps.runHeartbeatOnce) {
           const reason = `cron:${job.id}`;
           const delay = (ms: number) =>
@@ -576,7 +610,7 @@ export class CronService {
       await finish("error", String(err));
     } finally {
       job.updatedAtMs = nowMs;
-      if (!opts.forced && job.enabled) {
+      if (!opts.forced && job.enabled && !deleted) {
         // Keep nextRunAtMs in sync in case the schedule advanced during a long run.
         job.state.nextRunAtMs = this.computeJobNextRunAtMs(
           job,

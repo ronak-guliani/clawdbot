@@ -107,6 +107,8 @@ const FIELD_LABELS: Record<string, string> = {
   "tools.audio.transcription.args": "Audio Transcription Args",
   "tools.audio.transcription.timeoutSeconds":
     "Audio Transcription Timeout (sec)",
+  "tools.profile": "Tool Profile",
+  "agents.list[].tools.profile": "Agent Tool Profile",
   "tools.exec.applyPatch.enabled": "Enable apply_patch",
   "tools.exec.applyPatch.allowModels": "apply_patch Model Allowlist",
   "gateway.controlUi.basePath": "Control UI Base Path",
@@ -115,6 +117,27 @@ const FIELD_LABELS: Record<string, string> = {
   "gateway.reload.mode": "Config Reload Mode",
   "gateway.reload.debounceMs": "Config Reload Debounce (ms)",
   "agents.defaults.workspace": "Workspace",
+  "agents.defaults.bootstrapMaxChars": "Bootstrap Max Chars",
+  "agents.defaults.memorySearch": "Memory Search",
+  "agents.defaults.memorySearch.enabled": "Enable Memory Search",
+  "agents.defaults.memorySearch.provider": "Memory Search Provider",
+  "agents.defaults.memorySearch.remote.baseUrl": "Remote Embedding Base URL",
+  "agents.defaults.memorySearch.remote.apiKey": "Remote Embedding API Key",
+  "agents.defaults.memorySearch.remote.headers": "Remote Embedding Headers",
+  "agents.defaults.memorySearch.model": "Memory Search Model",
+  "agents.defaults.memorySearch.fallback": "Memory Search Fallback",
+  "agents.defaults.memorySearch.local.modelPath": "Local Embedding Model Path",
+  "agents.defaults.memorySearch.store.path": "Memory Search Index Path",
+  "agents.defaults.memorySearch.chunking.tokens": "Memory Chunk Tokens",
+  "agents.defaults.memorySearch.chunking.overlap":
+    "Memory Chunk Overlap Tokens",
+  "agents.defaults.memorySearch.sync.onSessionStart": "Index on Session Start",
+  "agents.defaults.memorySearch.sync.onSearch": "Index on Search (Lazy)",
+  "agents.defaults.memorySearch.sync.watch": "Watch Memory Files",
+  "agents.defaults.memorySearch.sync.watchDebounceMs":
+    "Memory Watch Debounce (ms)",
+  "agents.defaults.memorySearch.query.maxResults": "Memory Search Max Results",
+  "agents.defaults.memorySearch.query.minScore": "Memory Search Min Score",
   "auth.profiles": "Auth Profiles",
   "auth.order": "Auth Profile Order",
   "auth.cooldowns.billingBackoffHours": "Billing Backoff (hours)",
@@ -213,8 +236,30 @@ const FIELD_HELP: Record<string, string> = {
     "Cap (hours) for billing backoff (default: 24).",
   "auth.cooldowns.failureWindowHours":
     "Failure window (hours) for backoff counters (default: 24).",
+  "agents.defaults.bootstrapMaxChars":
+    "Max characters of each workspace bootstrap file injected into the system prompt before truncation (default: 20000).",
   "agents.defaults.models":
     "Configured model catalog (keys are full provider/model IDs).",
+  "agents.defaults.memorySearch":
+    "Vector search over MEMORY.md and memory/*.md (per-agent overrides supported).",
+  "agents.defaults.memorySearch.provider":
+    'Embedding provider ("openai" or "local").',
+  "agents.defaults.memorySearch.remote.baseUrl":
+    "Custom OpenAI-compatible base URL (e.g. for Gemini/OpenRouter proxies).",
+  "agents.defaults.memorySearch.remote.apiKey":
+    "Custom API key for the remote embedding provider.",
+  "agents.defaults.memorySearch.remote.headers":
+    "Extra headers for remote embeddings (merged; remote overrides OpenAI headers).",
+  "agents.defaults.memorySearch.local.modelPath":
+    "Local GGUF model path or hf: URI (node-llama-cpp).",
+  "agents.defaults.memorySearch.fallback":
+    'Fallback to OpenAI when local embeddings fail ("openai" or "none").',
+  "agents.defaults.memorySearch.store.path":
+    "SQLite index path (default: ~/.clawdbot/memory/{agentId}.sqlite).",
+  "agents.defaults.memorySearch.sync.onSearch":
+    "Lazy sync: reindex on first search after a change.",
+  "agents.defaults.memorySearch.sync.watch":
+    "Watch memory files for changes (chokidar).",
   "plugins.enabled": "Enable plugin/extension loading (default: true).",
   "plugins.allow":
     "Optional allowlist of plugin ids; when set, only listed plugins load.",
@@ -252,6 +297,12 @@ const FIELD_HELP: Record<string, string> = {
     "Allow /restart and gateway restart tool actions (default: false).",
   "commands.useAccessGroups":
     "Enforce access-group allowlists/policies for commands.",
+  "discord.commands.native":
+    'Override native commands for Discord (bool or "auto").',
+  "telegram.commands.native":
+    'Override native commands for Telegram (bool or "auto").',
+  "slack.commands.native":
+    'Override native commands for Slack (bool or "auto").',
   "session.agentToAgent.maxPingPongTurns":
     "Max reply-back turns between requester and target (0–5).",
   "messages.ackReaction":

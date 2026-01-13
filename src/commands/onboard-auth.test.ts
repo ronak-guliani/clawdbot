@@ -13,7 +13,11 @@ import {
   applyOpencodeZenProviderConfig,
   applyOpenrouterConfig,
   applyOpenrouterProviderConfig,
+  applySyntheticConfig,
+  applySyntheticProviderConfig,
   OPENROUTER_DEFAULT_MODEL_REF,
+  SYNTHETIC_DEFAULT_MODEL_ID,
+  SYNTHETIC_DEFAULT_MODEL_REF,
   writeOAuthCredentials,
 } from "./onboard-auth.js";
 
@@ -129,12 +133,7 @@ describe("applyMinimaxApiConfig", () => {
     );
   });
 
-  it("sets reasoning flag for MiniMax-M2 model", () => {
-    const cfg = applyMinimaxApiConfig({}, "MiniMax-M2");
-    expect(cfg.models?.providers?.minimax?.models[0]?.reasoning).toBe(true);
-  });
-
-  it("does not set reasoning for non-M2 models", () => {
+  it("does not set reasoning for non-reasoning models", () => {
     const cfg = applyMinimaxApiConfig({}, "MiniMax-M2.1");
     expect(cfg.models?.providers?.minimax?.models[0]?.reasoning).toBe(false);
   });
@@ -257,6 +256,56 @@ describe("applyMinimaxApiProviderConfig", () => {
     expect(cfg.agents?.defaults?.model?.primary).toBe(
       "anthropic/claude-opus-4-5",
     );
+  });
+});
+
+describe("applySyntheticConfig", () => {
+  it("adds synthetic provider with correct settings", () => {
+    const cfg = applySyntheticConfig({});
+    expect(cfg.models?.providers?.synthetic).toMatchObject({
+      baseUrl: "https://api.synthetic.new/anthropic",
+      api: "anthropic-messages",
+    });
+  });
+
+  it("sets correct primary model", () => {
+    const cfg = applySyntheticConfig({});
+    expect(cfg.agents?.defaults?.model?.primary).toBe(
+      SYNTHETIC_DEFAULT_MODEL_REF,
+    );
+  });
+
+  it("merges existing synthetic provider models", () => {
+    const cfg = applySyntheticProviderConfig({
+      models: {
+        providers: {
+          synthetic: {
+            baseUrl: "https://old.example.com",
+            apiKey: "old-key",
+            api: "openai-completions",
+            models: [
+              {
+                id: "old-model",
+                name: "Old",
+                reasoning: false,
+                input: ["text"],
+                cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 1000,
+                maxTokens: 100,
+              },
+            ],
+          },
+        },
+      },
+    });
+    expect(cfg.models?.providers?.synthetic?.baseUrl).toBe(
+      "https://api.synthetic.new/anthropic",
+    );
+    expect(cfg.models?.providers?.synthetic?.api).toBe("anthropic-messages");
+    expect(cfg.models?.providers?.synthetic?.apiKey).toBe("old-key");
+    const ids = cfg.models?.providers?.synthetic?.models.map((m) => m.id);
+    expect(ids).toContain("old-model");
+    expect(ids).toContain(SYNTHETIC_DEFAULT_MODEL_ID);
   });
 });
 

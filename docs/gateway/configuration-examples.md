@@ -150,7 +150,8 @@ Save to `~/.clawdbot/clawdbot.json` and you can DM the bot from that number.
   whatsapp: {
     dmPolicy: "pairing",
     allowFrom: ["+15555550123"],
-    groupPolicy: "open",
+    groupPolicy: "allowlist",
+    groupAllowFrom: ["+15555550123"],
     groups: { "*": { requireMention: true } }
   },
 
@@ -158,7 +159,8 @@ Save to `~/.clawdbot/clawdbot.json` and you can DM the bot from that number.
     enabled: true,
     botToken: "YOUR_TELEGRAM_BOT_TOKEN",
     allowFrom: ["123456789"],
-    groupPolicy: "open",
+    groupPolicy: "allowlist",
+    groupAllowFrom: ["123456789"],
     groups: { "*": { requireMention: true } }
   },
 
@@ -237,7 +239,15 @@ Save to `~/.clawdbot/clawdbot.json` and you can DM the bot from that number.
         target: "last",
         to: "+15555550123",
         prompt: "HEARTBEAT",
-        ackMaxChars: 30
+        ackMaxChars: 300
+      },
+      memorySearch: {
+        provider: "openai",
+        model: "text-embedding-004",
+        remote: {
+          baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
+          apiKey: "${GEMINI_API_KEY}"
+        }
       },
       sandbox: {
         mode: "non-main",

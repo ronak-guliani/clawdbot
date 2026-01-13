@@ -76,7 +76,7 @@ Clawdbot ships with the pi‑ai catalog. These providers require **no**
 
 - Provider: `google`
 - Auth: `GEMINI_API_KEY`
-- Example model: `google/gemini-3-pro`
+- Example model: `google/gemini-3-pro-preview`
 - CLI: `clawdbot onboard --auth-choice gemini-api-key`
 
 ### Google Vertex / Antigravity / Gemini CLI
@@ -109,6 +109,67 @@ Clawdbot ships with the pi‑ai catalog. These providers require **no**
 
 Use `models.providers` (or `models.json`) to add **custom** providers or
 OpenAI/Anthropic‑compatible proxies.
+
+### Moonshot AI (Kimi)
+
+Moonshot uses OpenAI-compatible endpoints, so configure it as a custom provider:
+
+- Provider: `moonshot`
+- Auth: `MOONSHOT_API_KEY`
+- Example model: `moonshot/kimi-k2-0905-preview`
+- Kimi K2 model IDs:
+  {/* moonshot-kimi-k2-model-refs:start */}
+  - `moonshot/kimi-k2-0905-preview`
+  - `moonshot/kimi-k2-turbo-preview`
+  - `moonshot/kimi-k2-thinking`
+  - `moonshot/kimi-k2-thinking-turbo`
+  {/* moonshot-kimi-k2-model-refs:end */}
+```json5
+{
+  agents: {
+    defaults: { model: { primary: "moonshot/kimi-k2-0905-preview" } }
+  },
+  models: {
+    mode: "merge",
+    providers: {
+      moonshot: {
+        baseUrl: "https://api.moonshot.ai/v1",
+        apiKey: "${MOONSHOT_API_KEY}",
+        api: "openai-completions",
+        models: [{ id: "kimi-k2-0905-preview", name: "Kimi K2 0905 Preview" }]
+      }
+    }
+  }
+}
+```
+
+### Synthetic
+
+Synthetic provides Anthropic-compatible models behind the `synthetic` provider:
+
+- Provider: `synthetic`
+- Auth: `SYNTHETIC_API_KEY`
+- Example model: `synthetic/hf:MiniMaxAI/MiniMax-M2.1`
+- CLI: `clawdbot onboard --auth-choice synthetic-api-key`
+
+```json5
+{
+  agents: {
+    defaults: { model: { primary: "synthetic/hf:MiniMaxAI/MiniMax-M2.1" } }
+  },
+  models: {
+    mode: "merge",
+    providers: {
+      synthetic: {
+        baseUrl: "https://api.synthetic.new/anthropic",
+        apiKey: "${SYNTHETIC_API_KEY}",
+        api: "anthropic-messages",
+        models: [{ id: "hf:MiniMaxAI/MiniMax-M2.1", name: "MiniMax M2.1" }]
+      }
+    }
+  }
+}
+```
 
 ### MiniMax
 

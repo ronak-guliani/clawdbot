@@ -40,9 +40,11 @@ export type CronJobState = {
 
 export type CronJob = {
   id: string;
+  agentId?: string;
   name: string;
   description?: string;
   enabled: boolean;
+  deleteAfterRun?: boolean;
   createdAtMs: number;
   updatedAtMs: number;
   schedule: CronSchedule;
