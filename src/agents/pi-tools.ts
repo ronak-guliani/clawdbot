@@ -1,4 +1,3 @@
-import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import {
   codingTools,
   createEditTool,
@@ -7,13 +6,8 @@ import {
   readTool,
 } from "@mariozechner/pi-coding-agent";
 import type { ClawdbotConfig } from "../config/config.js";
-import { detectMime } from "../media/mime.js";
 import { isSubagentSessionKey } from "../routing/session-key.js";
-import { resolveGatewayMessageProvider } from "../utils/message-provider.js";
-import {
-  resolveAgentConfig,
-  resolveAgentIdFromSessionKey,
-} from "./agent-scope.js";
+import { resolveGatewayMessageChannel } from "../utils/message-channel.js";
 import { createApplyPatchTool } from "./apply-patch.js";
 import {
   createExecTool,
@@ -21,375 +15,34 @@ import {
   type ExecToolDefaults,
   type ProcessToolDefaults,
 } from "./bash-tools.js";
+import { listChannelAgentTools } from "./channel-tools.js";
 import { createClawdbotTools } from "./clawdbot-tools.js";
 import type { ModelAuthMode } from "./model-auth.js";
-import { listProviderAgentTools } from "./provider-tools.js";
-import type { SandboxContext, SandboxToolPolicy } from "./sandbox.js";
-import { assertSandboxPath } from "./sandbox-paths.js";
-import { cleanSchemaForGemini } from "./schema/clean-for-gemini.js";
-import { sanitizeToolResultImages } from "./tool-images.js";
+import { wrapToolWithAbortSignal } from "./pi-tools.abort.js";
 import {
-  expandToolGroups,
-  normalizeToolName,
-  resolveToolProfilePolicy,
-} from "./tool-policy.js";
-
-// NOTE(steipete): Upstream read now does file-magic MIME detection; we keep the wrapper
-// to normalize payloads and sanitize oversized images before they hit providers.
-type ToolContentBlock = AgentToolResult<unknown>["content"][number];
-type ImageContentBlock = Extract<ToolContentBlock, { type: "image" }>;
-type TextContentBlock = Extract<ToolContentBlock, { type: "text" }>;
-
-async function sniffMimeFromBase64(
-  base64: string,
-): Promise<string | undefined> {
-  const trimmed = base64.trim();
-  if (!trimmed) return undefined;
-
-  const take = Math.min(256, trimmed.length);
-  const sliceLen = take - (take % 4);
-  if (sliceLen < 8) return undefined;
-
-  try {
-    const head = Buffer.from(trimmed.slice(0, sliceLen), "base64");
-    return await detectMime({ buffer: head });
-  } catch {
-    return undefined;
-  }
-}
-
-function rewriteReadImageHeader(text: string, mimeType: string): string {
-  // pi-coding-agent uses: "Read image file [image/png]"
-  if (text.startsWith("Read image file [") && text.endsWith("]")) {
-    return `Read image file [${mimeType}]`;
-  }
-  return text;
-}
-
-async function normalizeReadImageResult(
-  result: AgentToolResult<unknown>,
-  filePath: string,
-): Promise<AgentToolResult<unknown>> {
-  const content = Array.isArray(result.content) ? result.content : [];
-
-  const image = content.find(
-    (b): b is ImageContentBlock =>
-      !!b &&
-      typeof b === "object" &&
-      (b as { type?: unknown }).type === "image" &&
-      typeof (b as { data?: unknown }).data === "string" &&
-      typeof (b as { mimeType?: unknown }).mimeType === "string",
-  );
-  if (!image) return result;
-
-  if (!image.data.trim()) {
-    throw new Error(`read: image payload is empty (${filePath})`);
-  }
-
-  const sniffed = await sniffMimeFromBase64(image.data);
-  if (!sniffed) return result;
-
-  if (!sniffed.startsWith("image/")) {
-    throw new Error(
-      `read: file looks like ${sniffed} but was treated as ${image.mimeType} (${filePath})`,
-    );
-  }
-
-  if (sniffed === image.mimeType) return result;
-
-  const nextContent = content.map((block) => {
-    if (
-      block &&
-      typeof block === "object" &&
-      (block as { type?: unknown }).type === "image"
-    ) {
-      const b = block as ImageContentBlock & { mimeType: string };
-      return { ...b, mimeType: sniffed } satisfies ImageContentBlock;
-    }
-    if (
-      block &&
-      typeof block === "object" &&
-      (block as { type?: unknown }).type === "text" &&
-      typeof (block as { text?: unknown }).text === "string"
-    ) {
-      const b = block as TextContentBlock & { text: string };
-      return {
-        ...b,
-        text: rewriteReadImageHeader(b.text, sniffed),
-      } satisfies TextContentBlock;
-    }
-    return block;
-  });
-
-  return { ...result, content: nextContent };
-}
-
-// biome-ignore lint/suspicious/noExplicitAny: TypeBox schema type from pi-agent-core uses a different module instance.
-type AnyAgentTool = AgentTool<any, unknown>;
-
-function extractEnumValues(schema: unknown): unknown[] | undefined {
-  if (!schema || typeof schema !== "object") return undefined;
-  const record = schema as Record<string, unknown>;
-  if (Array.isArray(record.enum)) return record.enum;
-  if ("const" in record) return [record.const];
-  const variants = Array.isArray(record.anyOf)
-    ? record.anyOf
-    : Array.isArray(record.oneOf)
-      ? record.oneOf
-      : null;
-  if (variants) {
-    const values = variants.flatMap((variant) => {
-      const extracted = extractEnumValues(variant);
-      return extracted ?? [];
-    });
-    return values.length > 0 ? values : undefined;
-  }
-  return undefined;
-}
-
-function mergePropertySchemas(existing: unknown, incoming: unknown): unknown {
-  if (!existing) return incoming;
-  if (!incoming) return existing;
-
-  const existingEnum = extractEnumValues(existing);
-  const incomingEnum = extractEnumValues(incoming);
-  if (existingEnum || incomingEnum) {
-    const values = Array.from(
-      new Set([...(existingEnum ?? []), ...(incomingEnum ?? [])]),
-    );
-    const merged: Record<string, unknown> = {};
-    for (const source of [existing, incoming]) {
-      if (!source || typeof source !== "object") continue;
-      const record = source as Record<string, unknown>;
-      for (const key of ["title", "description", "default"]) {
-        if (!(key in merged) && key in record) merged[key] = record[key];
-      }
-    }
-    const types = new Set(values.map((value) => typeof value));
-    if (types.size === 1) merged.type = Array.from(types)[0];
-    merged.enum = values;
-    return merged;
-  }
-
-  return existing;
-}
-
-function normalizeToolParameters(
-  tool: AnyAgentTool,
-  options?: { modelProvider?: string },
-): AnyAgentTool {
-  const schema =
-    tool.parameters && typeof tool.parameters === "object"
-      ? (tool.parameters as Record<string, unknown>)
-      : undefined;
-  if (!schema) return tool;
-
-  // Provider quirks:
-  // - Gemini rejects several JSON Schema keywords, so we scrub those.
-  // - OpenAI rejects function tool schemas unless the *top-level* is `type: "object"`.
-  //   (TypeBox root unions compile to `{ anyOf: [...] }` without `type`).
-  //
-  // Normalize once here so callers can always pass `tools` through unchanged.
-
-  // If schema already has type + properties (no top-level anyOf to merge),
-  // still clean it for Gemini compatibility
-  if (
-    "type" in schema &&
-    "properties" in schema &&
-    !Array.isArray(schema.anyOf)
-  ) {
-    return {
-      ...tool,
-      parameters: cleanToolSchemaForGemini(schema, {
-        provider: options?.modelProvider,
-      }),
-    };
-  }
-
-  // Some tool schemas (esp. unions) may omit `type` at the top-level. If we see
-  // object-ish fields, force `type: "object"` so OpenAI accepts the schema.
-  if (
-    !("type" in schema) &&
-    (typeof schema.properties === "object" || Array.isArray(schema.required)) &&
-    !Array.isArray(schema.anyOf) &&
-    !Array.isArray(schema.oneOf)
-  ) {
-    return {
-      ...tool,
-      parameters: cleanToolSchemaForGemini(
-        { ...schema, type: "object" },
-        { provider: options?.modelProvider },
-      ),
-    };
-  }
-
-  const variantKey = Array.isArray(schema.anyOf)
-    ? "anyOf"
-    : Array.isArray(schema.oneOf)
-      ? "oneOf"
-      : null;
-  if (!variantKey) return tool;
-  const variants = schema[variantKey] as unknown[];
-  const mergedProperties: Record<string, unknown> = {};
-  const requiredCounts = new Map<string, number>();
-  let objectVariants = 0;
-
-  for (const entry of variants) {
-    if (!entry || typeof entry !== "object") continue;
-    const props = (entry as { properties?: unknown }).properties;
-    if (!props || typeof props !== "object") continue;
-    objectVariants += 1;
-    for (const [key, value] of Object.entries(
-      props as Record<string, unknown>,
-    )) {
-      if (!(key in mergedProperties)) {
-        mergedProperties[key] = value;
-        continue;
-      }
-      mergedProperties[key] = mergePropertySchemas(
-        mergedProperties[key],
-        value,
-      );
-    }
-    const required = Array.isArray((entry as { required?: unknown }).required)
-      ? (entry as { required: unknown[] }).required
-      : [];
-    for (const key of required) {
-      if (typeof key !== "string") continue;
-      requiredCounts.set(key, (requiredCounts.get(key) ?? 0) + 1);
-    }
-  }
-
-  const baseRequired = Array.isArray(schema.required)
-    ? schema.required.filter((key) => typeof key === "string")
-    : undefined;
-  const mergedRequired =
-    baseRequired && baseRequired.length > 0
-      ? baseRequired
-      : objectVariants > 0
-        ? Array.from(requiredCounts.entries())
-            .filter(([, count]) => count === objectVariants)
-            .map(([key]) => key)
-        : undefined;
-
-  const nextSchema: Record<string, unknown> = { ...schema };
-  return {
-    ...tool,
-    // Flatten union schemas into a single object schema:
-    // - Gemini doesn't allow top-level `type` together with `anyOf`.
-    // - OpenAI rejects schemas without top-level `type: "object"`.
-    // Merging properties preserves useful enums like `action` while keeping schemas portable.
-    parameters: cleanToolSchemaForGemini(
-      {
-        type: "object",
-        ...(typeof nextSchema.title === "string"
-          ? { title: nextSchema.title }
-          : {}),
-        ...(typeof nextSchema.description === "string"
-          ? { description: nextSchema.description }
-          : {}),
-        properties:
-          Object.keys(mergedProperties).length > 0
-            ? mergedProperties
-            : (schema.properties ?? {}),
-        ...(mergedRequired && mergedRequired.length > 0
-          ? { required: mergedRequired }
-          : {}),
-        additionalProperties:
-          "additionalProperties" in schema ? schema.additionalProperties : true,
-      },
-      { provider: options?.modelProvider },
-    ),
-  };
-}
-
-function isNullSchema(value: unknown): boolean {
-  if (!value || typeof value !== "object") return false;
-  const record = value as Record<string, unknown>;
-  if (record.type === "null") return true;
-  if ("const" in record && record.const === null) return true;
-  if (Array.isArray(record.enum) && record.enum.length === 1) {
-    return record.enum[0] === null;
-  }
-  return false;
-}
-
-function stripNullableUnions(schema: unknown): unknown {
-  if (!schema || typeof schema !== "object") return schema;
-  if (Array.isArray(schema)) return schema.map(stripNullableUnions);
-
-  const record = schema as Record<string, unknown>;
-
-  const tryStripUnion = (variants: unknown[]) => {
-    const nonNull = variants.filter((variant) => !isNullSchema(variant));
-    if (nonNull.length === variants.length) return null;
-    if (nonNull.length !== 1) return null;
-    const cleaned = stripNullableUnions(nonNull[0]);
-    if (!cleaned || typeof cleaned !== "object" || Array.isArray(cleaned)) {
-      return cleaned;
-    }
-    const result: Record<string, unknown> = {
-      ...(cleaned as Record<string, unknown>),
-    };
-    for (const key of ["description", "title", "default"]) {
-      if (key in record && record[key] !== undefined) {
-        result[key] = record[key];
-      }
-    }
-    return result;
-  };
-
-  if (Array.isArray(record.anyOf)) {
-    const stripped = tryStripUnion(record.anyOf);
-    if (stripped) return stripped;
-  }
-  if (Array.isArray(record.oneOf)) {
-    const stripped = tryStripUnion(record.oneOf);
-    if (stripped) return stripped;
-  }
-
-  const cleaned: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(record)) {
-    if (key === "properties" && value && typeof value === "object") {
-      const props = value as Record<string, unknown>;
-      cleaned[key] = Object.fromEntries(
-        Object.entries(props).map(([k, v]) => [k, stripNullableUnions(v)]),
-      );
-    } else if (key === "items" && value && typeof value === "object") {
-      cleaned[key] = stripNullableUnions(value);
-    } else if (key === "anyOf" && Array.isArray(value)) {
-      cleaned[key] = value.map(stripNullableUnions);
-    } else if (key === "oneOf" && Array.isArray(value)) {
-      cleaned[key] = value.map(stripNullableUnions);
-    } else if (key === "allOf" && Array.isArray(value)) {
-      cleaned[key] = value.map(stripNullableUnions);
-    } else {
-      cleaned[key] = value;
-    }
-  }
-
-  return cleaned;
-}
-
-function cleanToolSchemaForGemini(
-  schema: Record<string, unknown>,
-  options?: { provider?: string },
-): unknown {
-  const isGemini =
-    options?.provider === "google-gemini-cli" ||
-    options?.provider === "google-antigravity";
-  const isOpenAI = options?.provider === "openai";
-
-  // We flatten by default to keep schemas portable and compatible with most providers,
-  // but we allow OpenAI to preserve unions (e.g. nullable) if requested.
-  const flattenUnions = !isOpenAI;
-
-  const cleaned = cleanSchemaForGemini(schema, { flattenUnions });
-  if (isGemini) {
-    return stripNullableUnions(cleaned);
-  }
-  return cleaned;
-}
+  filterToolsByPolicy,
+  isToolAllowedByPolicies,
+  resolveEffectiveToolPolicy,
+  resolveSubagentToolPolicy,
+} from "./pi-tools.policy.js";
+import {
+  assertRequiredParams,
+  CLAUDE_PARAM_GROUPS,
+  createClawdbotReadTool,
+  createSandboxedEditTool,
+  createSandboxedReadTool,
+  createSandboxedWriteTool,
+  normalizeToolParams,
+  patchToolSchemaForClaudeCompatibility,
+  wrapToolParamNormalization,
+} from "./pi-tools.read.js";
+import {
+  cleanToolSchemaForGemini,
+  normalizeToolParameters,
+} from "./pi-tools.schema.js";
+import type { AnyAgentTool } from "./pi-tools.types.js";
+import type { SandboxContext } from "./sandbox.js";
+import { resolveToolProfilePolicy } from "./tool-policy.js";
 
 function isOpenAIProvider(provider?: string) {
   const normalized = provider?.trim().toLowerCase();
@@ -420,295 +73,6 @@ function isApplyPatchAllowedForModel(params: {
   });
 }
 
-const DEFAULT_SUBAGENT_TOOL_DENY = [
-  "sessions_list",
-  "sessions_history",
-  "sessions_send",
-  "sessions_spawn",
-];
-
-function resolveSubagentToolPolicy(cfg?: ClawdbotConfig): SandboxToolPolicy {
-  const configured = cfg?.tools?.subagents?.tools;
-  const deny = [
-    ...DEFAULT_SUBAGENT_TOOL_DENY,
-    ...(Array.isArray(configured?.deny) ? configured.deny : []),
-  ];
-  const allow = Array.isArray(configured?.allow) ? configured.allow : undefined;
-  return { allow, deny };
-}
-
-function isToolAllowedByPolicyName(
-  name: string,
-  policy?: SandboxToolPolicy,
-): boolean {
-  if (!policy) return true;
-  const deny = new Set(expandToolGroups(policy.deny));
-  const allowRaw = expandToolGroups(policy.allow);
-  const allow = allowRaw.length > 0 ? new Set(allowRaw) : null;
-  const normalized = normalizeToolName(name);
-  if (deny.has(normalized)) return false;
-  if (allow) {
-    if (allow.has(normalized)) return true;
-    if (normalized === "apply_patch" && allow.has("exec")) return true;
-    return false;
-  }
-  return true;
-}
-
-function filterToolsByPolicy(
-  tools: AnyAgentTool[],
-  policy?: SandboxToolPolicy,
-) {
-  if (!policy) return tools;
-  return tools.filter((tool) => isToolAllowedByPolicyName(tool.name, policy));
-}
-
-function resolveEffectiveToolPolicy(params: {
-  config?: ClawdbotConfig;
-  sessionKey?: string;
-}) {
-  const agentId = params.sessionKey
-    ? resolveAgentIdFromSessionKey(params.sessionKey)
-    : undefined;
-  const agentConfig =
-    params.config && agentId
-      ? resolveAgentConfig(params.config, agentId)
-      : undefined;
-  const agentTools = agentConfig?.tools;
-  const hasAgentToolPolicy =
-    Array.isArray(agentTools?.allow) ||
-    Array.isArray(agentTools?.deny) ||
-    typeof agentTools?.profile === "string";
-  const globalTools = params.config?.tools;
-  const profile = agentTools?.profile ?? globalTools?.profile;
-  return {
-    agentId,
-    policy: hasAgentToolPolicy ? agentTools : globalTools,
-    profile,
-  };
-}
-
-function isToolAllowedByPolicy(name: string, policy?: SandboxToolPolicy) {
-  return isToolAllowedByPolicyName(name, policy);
-}
-
-function isToolAllowedByPolicies(
-  name: string,
-  policies: Array<SandboxToolPolicy | undefined>,
-) {
-  return policies.every((policy) => isToolAllowedByPolicy(name, policy));
-}
-
-function wrapSandboxPathGuard(tool: AnyAgentTool, root: string): AnyAgentTool {
-  return {
-    ...tool,
-    execute: async (toolCallId, args, signal, onUpdate) => {
-      const normalized = normalizeToolParams(args);
-      const record =
-        normalized ??
-        (args && typeof args === "object"
-          ? (args as Record<string, unknown>)
-          : undefined);
-      const filePath = record?.path;
-      if (typeof filePath === "string" && filePath.trim()) {
-        await assertSandboxPath({ filePath, cwd: root, root });
-      }
-      return tool.execute(toolCallId, normalized ?? args, signal, onUpdate);
-    },
-  };
-}
-
-type RequiredParamGroup = {
-  keys: readonly string[];
-  allowEmpty?: boolean;
-  label?: string;
-};
-
-const CLAUDE_PARAM_GROUPS = {
-  read: [{ keys: ["path", "file_path"], label: "path (path or file_path)" }],
-  write: [{ keys: ["path", "file_path"], label: "path (path or file_path)" }],
-  edit: [
-    { keys: ["path", "file_path"], label: "path (path or file_path)" },
-    {
-      keys: ["oldText", "old_string"],
-      label: "oldText (oldText or old_string)",
-    },
-    {
-      keys: ["newText", "new_string"],
-      label: "newText (newText or new_string)",
-    },
-  ],
-} as const;
-
-function patchToolSchemaForClaudeCompatibility(
-  tool: AnyAgentTool,
-): AnyAgentTool {
-  const schema =
-    tool.parameters && typeof tool.parameters === "object"
-      ? (tool.parameters as Record<string, unknown>)
-      : undefined;
-
-  if (!schema || !schema.properties || typeof schema.properties !== "object") {
-    return tool;
-  }
-
-  const properties = { ...(schema.properties as Record<string, unknown>) };
-  const required = Array.isArray(schema.required)
-    ? schema.required.filter((key): key is string => typeof key === "string")
-    : [];
-  let changed = false;
-
-  const aliasPairs: Array<{ original: string; alias: string }> = [
-    { original: "path", alias: "file_path" },
-    { original: "oldText", alias: "old_string" },
-    { original: "newText", alias: "new_string" },
-  ];
-
-  for (const { original, alias } of aliasPairs) {
-    if (!(original in properties)) continue;
-    if (!(alias in properties)) {
-      properties[alias] = properties[original];
-      changed = true;
-    }
-    const idx = required.indexOf(original);
-    if (idx !== -1) {
-      required.splice(idx, 1);
-      changed = true;
-    }
-  }
-
-  if (!changed) return tool;
-
-  return {
-    ...tool,
-    parameters: {
-      ...schema,
-      properties,
-      ...(required.length > 0 ? { required } : {}),
-    },
-  };
-}
-
-function assertRequiredParams(
-  record: Record<string, unknown> | undefined,
-  groups: readonly RequiredParamGroup[],
-  toolName: string,
-): void {
-  if (!record || typeof record !== "object") {
-    throw new Error(`Missing parameters for ${toolName}`);
-  }
-
-  for (const group of groups) {
-    const satisfied = group.keys.some((key) => {
-      if (!(key in record)) return false;
-      const value = record[key];
-      if (typeof value !== "string") return false;
-      if (group.allowEmpty) return true;
-      return value.trim().length > 0;
-    });
-
-    if (!satisfied) {
-      const label = group.label ?? group.keys.join(" or ");
-      throw new Error(`Missing required parameter: ${label}`);
-    }
-  }
-}
-
-function createSandboxedReadTool(root: string) {
-  const base = createReadTool(root);
-  return wrapSandboxPathGuard(createClawdbotReadTool(base), root);
-}
-
-function createSandboxedWriteTool(root: string) {
-  const base = createWriteTool(root);
-  return wrapSandboxPathGuard(
-    wrapToolParamNormalization(base, CLAUDE_PARAM_GROUPS.write),
-    root,
-  );
-}
-
-function createSandboxedEditTool(root: string) {
-  const base = createEditTool(root);
-  return wrapSandboxPathGuard(
-    wrapToolParamNormalization(base, CLAUDE_PARAM_GROUPS.edit),
-    root,
-  );
-}
-
-// Normalize tool parameters from Claude Code conventions to pi-coding-agent conventions.
-// Claude Code uses file_path/old_string/new_string while pi-coding-agent uses path/oldText/newText.
-// This prevents models trained on Claude Code from getting stuck in tool-call loops.
-function normalizeToolParams(
-  params: unknown,
-): Record<string, unknown> | undefined {
-  if (!params || typeof params !== "object") return undefined;
-  const record = params as Record<string, unknown>;
-  const normalized = { ...record };
-  // file_path → path (read, write, edit)
-  if ("file_path" in normalized && !("path" in normalized)) {
-    normalized.path = normalized.file_path;
-    delete normalized.file_path;
-  }
-  // old_string → oldText (edit)
-  if ("old_string" in normalized && !("oldText" in normalized)) {
-    normalized.oldText = normalized.old_string;
-    delete normalized.old_string;
-  }
-  // new_string → newText (edit)
-  if ("new_string" in normalized && !("newText" in normalized)) {
-    normalized.newText = normalized.new_string;
-    delete normalized.new_string;
-  }
-  return normalized;
-}
-
-// Generic wrapper to normalize parameters for any tool
-function wrapToolParamNormalization(
-  tool: AnyAgentTool,
-  requiredParamGroups?: readonly RequiredParamGroup[],
-): AnyAgentTool {
-  const patched = patchToolSchemaForClaudeCompatibility(tool);
-  return {
-    ...patched,
-    execute: async (toolCallId, params, signal, onUpdate) => {
-      const normalized = normalizeToolParams(params);
-      const record =
-        normalized ??
-        (params && typeof params === "object"
-          ? (params as Record<string, unknown>)
-          : undefined);
-      if (requiredParamGroups?.length) {
-        assertRequiredParams(record, requiredParamGroups, tool.name);
-      }
-      return tool.execute(toolCallId, normalized ?? params, signal, onUpdate);
-    },
-  };
-}
-function createClawdbotReadTool(base: AnyAgentTool): AnyAgentTool {
-  const patched = patchToolSchemaForClaudeCompatibility(base);
-  return {
-    ...patched,
-    execute: async (toolCallId, params, signal) => {
-      const normalized = normalizeToolParams(params);
-      const record =
-        normalized ??
-        (params && typeof params === "object"
-          ? (params as Record<string, unknown>)
-          : undefined);
-      assertRequiredParams(record, CLAUDE_PARAM_GROUPS.read, base.name);
-      const result = (await base.execute(
-        toolCallId,
-        normalized ?? params,
-        signal,
-      )) as AgentToolResult<unknown>;
-      const filePath =
-        typeof record?.path === "string" ? String(record.path) : "<unknown>";
-      const normalizedResult = await normalizeReadImageResult(result, filePath);
-      return sanitizeToolResultImages(normalizedResult, `read:${filePath}`);
-    },
-  };
-}
-
 export const __testing = {
   cleanToolSchemaForGemini,
   normalizeToolParams,
@@ -716,48 +80,6 @@ export const __testing = {
   wrapToolParamNormalization,
   assertRequiredParams,
 } as const;
-
-function throwAbortError(): never {
-  const err = new Error("Aborted");
-  err.name = "AbortError";
-  throw err;
-}
-
-function combineAbortSignals(
-  a?: AbortSignal,
-  b?: AbortSignal,
-): AbortSignal | undefined {
-  if (!a && !b) return undefined;
-  if (a && !b) return a;
-  if (b && !a) return b;
-  if (a?.aborted) return a;
-  if (b?.aborted) return b;
-  if (typeof AbortSignal.any === "function") {
-    return AbortSignal.any([a as AbortSignal, b as AbortSignal]);
-  }
-  const controller = new AbortController();
-  const onAbort = () => controller.abort();
-  a?.addEventListener("abort", onAbort, { once: true });
-  b?.addEventListener("abort", onAbort, { once: true });
-  return controller.signal;
-}
-
-function wrapToolWithAbortSignal(
-  tool: AnyAgentTool,
-  abortSignal?: AbortSignal,
-): AnyAgentTool {
-  if (!abortSignal) return tool;
-  const execute = tool.execute;
-  if (!execute) return tool;
-  return {
-    ...tool,
-    execute: async (toolCallId, params, signal, onUpdate) => {
-      const combined = combineAbortSignals(signal, abortSignal);
-      if (combined?.aborted) throwAbortError();
-      return await execute(toolCallId, params, combined, onUpdate);
-    },
-  };
-}
 
 export function createClawdbotCodingTools(options?: {
   exec?: ExecToolDefaults & ProcessToolDefaults;
@@ -902,8 +224,8 @@ export function createClawdbotCodingTools(options?: {
     execTool as unknown as AnyAgentTool,
     bashTool,
     processTool as unknown as AnyAgentTool,
-    // Provider docking: include provider-defined agent tools (login, etc.).
-    ...listProviderAgentTools({ cfg: options?.config }),
+    // Channel docking: include channel-defined agent tools (login, etc.).
+    ...listChannelAgentTools({ cfg: options?.config }),
     ...createClawdbotTools({
       browserControlUrl: sandbox?.browser?.controlUrl,
       allowHostBrowserControl: sandbox ? sandbox.browserAllowHostControl : true,
@@ -911,7 +233,7 @@ export function createClawdbotCodingTools(options?: {
       allowedControlHosts: sandbox?.browserAllowedControlHosts,
       allowedControlPorts: sandbox?.browserAllowedControlPorts,
       agentSessionKey: options?.sessionKey,
-      agentProvider: resolveGatewayMessageProvider(options?.messageProvider),
+      agentChannel: resolveGatewayMessageChannel(options?.messageProvider),
       agentAccountId: options?.agentAccountId,
       agentDir: options?.agentDir,
       sandboxRoot,
@@ -938,9 +260,7 @@ export function createClawdbotCodingTools(options?: {
     : sandboxed;
   // Always normalize tool JSON Schemas before handing them to pi-agent/pi-ai.
   // Without this, some providers (notably OpenAI) will reject root-level union schemas.
-  const normalized = subagentFiltered.map((tool) =>
-    normalizeToolParameters(tool, { modelProvider: options?.modelProvider }),
-  );
+  const normalized = subagentFiltered.map(normalizeToolParameters);
   const withAbort = options?.abortSignal
     ? normalized.map((tool) =>
         wrapToolWithAbortSignal(tool, options.abortSignal),
