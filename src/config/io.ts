@@ -59,6 +59,13 @@ const SHELL_ENV_EXPECTED_KEYS = [
   "CLAWDBOT_GATEWAY_PASSWORD",
 ];
 
+type ConfigCacheEntry = {
+  mtimeMs: number;
+  config: ClawdbotConfig;
+};
+
+const globalConfigCache = new Map<string, ConfigCacheEntry>();
+
 export type ParseConfigJson5Result =
   | { ok: true; parsed: unknown }
   | { ok: false; error: string };
@@ -156,6 +163,13 @@ export function createConfigIO(overrides: ConfigIoDeps = {}) {
         }
         return {};
       }
+
+      const stats = deps.fs.statSync(configPath);
+      const cacheEntry = globalConfigCache.get(configPath);
+      if (cacheEntry && cacheEntry.mtimeMs === stats.mtimeMs) {
+        return cacheEntry.config;
+      }
+
       const raw = deps.fs.readFileSync(configPath, "utf-8");
       const parsed = deps.json5.parse(raw);
 
@@ -211,7 +225,12 @@ export function createConfigIO(overrides: ConfigIoDeps = {}) {
         });
       }
 
-      return applyConfigOverrides(cfg);
+      const finalConfig = applyConfigOverrides(cfg);
+      globalConfigCache.set(configPath, {
+        mtimeMs: stats.mtimeMs,
+        config: finalConfig,
+      });
+      return finalConfig;
     } catch (err) {
       if (err instanceof DuplicateAgentDirError) {
         deps.logger.error(err.message);
@@ -340,6 +359,7 @@ export function createConfigIO(overrides: ConfigIoDeps = {}) {
   }
 
   async function writeConfigFile(cfg: ClawdbotConfig) {
+    globalConfigCache.delete(configPath);
     const dir = path.dirname(configPath);
     await deps.fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
     const json = JSON.stringify(applyModelDefaults(cfg), null, 2)

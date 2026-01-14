@@ -95,6 +95,16 @@ export function createReplyDispatcher(
   };
 
   const enqueue = (kind: ReplyDispatchKind, payload: ReplyPayload) => {
+    // Filter out internal tool call representations (Gemini downgrade artifact)
+    if (
+      payload.text &&
+      payload.text.startsWith("[Tool Call:") &&
+      payload.text.includes("]\nArguments:")
+    ) {
+      return false;
+    }
+
+
     const normalized = normalizeReplyPayloadInternal(payload, options);
     if (!normalized) return false;
     queuedCounts[kind] += 1;
