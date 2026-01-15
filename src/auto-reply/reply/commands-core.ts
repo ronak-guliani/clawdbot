@@ -11,6 +11,10 @@ import {
   handleWhoamiCommand,
 } from "./commands-info.js";
 import {
+  handleBranchCommand,
+  handleScriptCommand,
+} from "./commands-scripts.js";
+import {
   handleAbortTrigger,
   handleActivationCommand,
   handleRestartCommand,
@@ -28,6 +32,8 @@ const HANDLERS: CommandHandler[] = [
   handleActivationCommand,
   handleSendPolicyCommand,
   handleRestartCommand,
+  handleScriptCommand,
+  handleBranchCommand,
   handleHelpCommand,
   handleCommandsListCommand,
   handleStatusCommand,

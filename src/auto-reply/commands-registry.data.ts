@@ -306,6 +306,18 @@ export const CHAT_COMMANDS: ChatCommandDefinition[] = (() => {
       textAlias: "/copilot-models",
       scope: "text",
     }),
+    defineChatCommand({
+      key: "branch-switch",
+      description: "Switch to a different git branch.",
+      textAlias: "/branch",
+      scope: "text",
+    }),
+    defineChatCommand({
+      key: "branch-main",
+      description: "Switch back to main branch.",
+      textAlias: "/main",
+      scope: "text",
+    }),
   );
 
   assertCommandRegistry(commands);
