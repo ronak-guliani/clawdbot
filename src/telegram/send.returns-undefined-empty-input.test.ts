@@ -21,13 +21,26 @@ vi.mock("grammy", () => ({
     api = botApi;
     constructor(
       public token: string,
-      public options?: { client?: { fetch?: typeof fetch } },
+      public options?: {
+        client?: { fetch?: typeof fetch; timeoutSeconds?: number };
+      },
     ) {
       botCtorSpy(token, options);
     }
   },
   InputFile: class {},
 }));
+
+const { loadConfig } = vi.hoisted(() => ({
+  loadConfig: vi.fn(() => ({})),
+}));
+vi.mock("../config/config.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../config/config.js")>();
+  return {
+    ...actual,
+    loadConfig,
+  };
+});
 
 import { buildInlineKeyboard, sendMessageTelegram } from "./send.js";
 
@@ -73,9 +86,40 @@ describe("buildInlineKeyboard", () => {
 
 describe("sendMessageTelegram", () => {
   beforeEach(() => {
+    loadConfig.mockReturnValue({});
     loadWebMedia.mockReset();
     botApi.sendMessage.mockReset();
     botCtorSpy.mockReset();
+  });
+
+  it("passes timeoutSeconds to grammY client when configured", async () => {
+    loadConfig.mockReturnValue({
+      channels: { telegram: { timeoutSeconds: 60 } },
+    });
+    await sendMessageTelegram("123", "hi", { token: "tok" });
+    expect(botCtorSpy).toHaveBeenCalledWith(
+      "tok",
+      expect.objectContaining({
+        client: expect.objectContaining({ timeoutSeconds: 60 }),
+      }),
+    );
+  });
+  it("prefers per-account timeoutSeconds overrides", async () => {
+    loadConfig.mockReturnValue({
+      channels: {
+        telegram: {
+          timeoutSeconds: 60,
+          accounts: { foo: { timeoutSeconds: 61 } },
+        },
+      },
+    });
+    await sendMessageTelegram("123", "hi", { token: "tok", accountId: "foo" });
+    expect(botCtorSpy).toHaveBeenCalledWith(
+      "tok",
+      expect.objectContaining({
+        client: expect.objectContaining({ timeoutSeconds: 61 }),
+      }),
+    );
   });
 
   it("falls back to plain text when Telegram rejects HTML", async () => {
@@ -163,12 +207,12 @@ describe("sendMessageTelegram", () => {
       sendMessage: typeof sendMessage;
     };
 
-    await expect(
-      sendMessageTelegram(chatId, "hi", { token: "tok", api }),
-    ).rejects.toThrow(/chat not found/i);
-    await expect(
-      sendMessageTelegram(chatId, "hi", { token: "tok", api }),
-    ).rejects.toThrow(/chat_id=123/);
+    await expect(sendMessageTelegram(chatId, "hi", { token: "tok", api })).rejects.toThrow(
+      /chat not found/i,
+    );
+    await expect(sendMessageTelegram(chatId, "hi", { token: "tok", api })).rejects.toThrow(
+      /chat_id=123/,
+    );
   });
 
   it("retries on transient errors with retry_after", async () => {
@@ -204,9 +248,7 @@ describe("sendMessageTelegram", () => {
 
   it("does not retry on non-transient errors", async () => {
     const chatId = "123";
-    const sendMessage = vi
-      .fn()
-      .mockRejectedValue(new Error("400: Bad Request"));
+    const sendMessage = vi.fn().mockRejectedValue(new Error("400: Bad Request"));
     const api = { sendMessage } as unknown as {
       sendMessage: typeof sendMessage;
     };
@@ -386,14 +428,10 @@ describe("sendMessageTelegram", () => {
       sendMessage: typeof sendMessage;
     };
 
-    await sendMessageTelegram(
-      `telegram:group:${chatId}:topic:271`,
-      "hello forum",
-      {
-        token: "tok",
-        api,
-      },
-    );
+    await sendMessageTelegram(`telegram:group:${chatId}:topic:271`, "hello forum", {
+      token: "tok",
+      api,
+    });
 
     expect(sendMessage).toHaveBeenCalledWith(chatId, "hello forum", {
       parse_mode: "HTML",

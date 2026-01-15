@@ -8,14 +8,8 @@ import {
   normalizeApiKeyInput,
   validateApiKeyInput,
 } from "./auth-choice.api-key.js";
-import type {
-  ApplyAuthChoiceParams,
-  ApplyAuthChoiceResult,
-} from "./auth-choice.apply.js";
-import {
-  buildTokenProfileId,
-  validateAnthropicSetupToken,
-} from "./auth-token.js";
+import type { ApplyAuthChoiceParams, ApplyAuthChoiceResult } from "./auth-choice.apply.js";
+import { buildTokenProfileId, validateAnthropicSetupToken } from "./auth-token.js";
 import { applyAuthProfileConfig, setAnthropicApiKey } from "./onboard-auth.js";
 
 export async function applyAuthChoiceAnthropic(
@@ -34,10 +28,10 @@ export async function applyAuthChoiceAnthropic(
           'Choose "Always Allow" so the launchd gateway can start without prompts.',
           'If you choose "Allow" or "Deny", each restart will block on a Keychain alert.',
         ].join("\n"),
-        "Claude CLI Keychain",
+        "Claude Code CLI Keychain",
       );
       const proceed = await params.prompter.confirm({
-        message: "Check Keychain for Claude CLI credentials now?",
+        message: "Check Keychain for Claude Code CLI credentials now?",
         initialValue: true,
       });
       if (!proceed) return { config: nextConfig };
@@ -80,9 +74,9 @@ export async function applyAuthChoiceAnthropic(
       if (!refreshed.profiles[CLAUDE_CLI_PROFILE_ID]) {
         await params.prompter.note(
           process.platform === "darwin"
-            ? 'No Claude CLI credentials found in Keychain ("Claude Code-credentials") or ~/.claude/.credentials.json.'
-            : "No Claude CLI credentials found at ~/.claude/.credentials.json.",
-          "Claude CLI OAuth",
+            ? 'No Claude Code CLI credentials found in Keychain ("Claude Code-credentials") or ~/.claude/.credentials.json.'
+            : "No Claude Code CLI credentials found at ~/.claude/.credentials.json.",
+          "Claude Code CLI OAuth",
         );
         return { config: nextConfig };
       }
@@ -143,7 +137,7 @@ export async function applyAuthChoiceAnthropic(
     });
     if (!store.profiles[CLAUDE_CLI_PROFILE_ID]) {
       await params.prompter.note(
-        `No Claude CLI credentials found after setup-token. Expected ${CLAUDE_CLI_PROFILE_ID}.`,
+        `No Claude Code CLI credentials found after setup-token. Expected ${CLAUDE_CLI_PROFILE_ID}.`,
         "Anthropic setup-token",
       );
       return { config: nextConfig };
@@ -164,10 +158,9 @@ export async function applyAuthChoiceAnthropic(
       options: [{ value: "anthropic", label: "Anthropic (only supported)" }],
     })) as "anthropic";
     await params.prompter.note(
-      [
-        "Run `claude setup-token` in your terminal.",
-        "Then paste the generated token below.",
-      ].join("\n"),
+      ["Run `claude setup-token` in your terminal.", "Then paste the generated token below."].join(
+        "\n",
+      ),
       "Anthropic token",
     );
 
@@ -223,10 +216,7 @@ export async function applyAuthChoiceAnthropic(
         message: "Enter Anthropic API key",
         validate: validateApiKeyInput,
       });
-      await setAnthropicApiKey(
-        normalizeApiKeyInput(String(key)),
-        params.agentDir,
-      );
+      await setAnthropicApiKey(normalizeApiKeyInput(String(key)), params.agentDir);
     }
     nextConfig = applyAuthProfileConfig(nextConfig, {
       profileId: "anthropic:default",

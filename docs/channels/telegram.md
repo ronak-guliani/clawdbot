@@ -103,6 +103,7 @@ group messages, so use admin if you need full visibility.
 ## Limits
 - Outbound text is chunked to `channels.telegram.textChunkLimit` (default 4000).
 - Media downloads/uploads are capped by `channels.telegram.mediaMaxMb` (default 5).
+- Telegram Bot API requests time out after `channels.telegram.timeoutSeconds` (default 500 via grammY). Set lower to avoid long hangs.
 - Group history context uses `channels.telegram.historyLimit` (or `channels.telegram.accounts.*.historyLimit`), falling back to `messages.groupChat.historyLimit`. Set `0` to disable (default 50).
 
 ## Group activation modes
@@ -261,8 +262,9 @@ Outbound Telegram API calls retry on transient network/429 errors with exponenti
 ## Agent tool (messages + reactions)
 - Tool: `telegram` with `sendMessage` action (`to`, `content`, optional `mediaUrl`, `replyToMessageId`, `messageThreadId`).
 - Tool: `telegram` with `react` action (`chatId`, `messageId`, `emoji`).
+- Tool: `telegram` with `deleteMessage` action (`chatId`, `messageId`).
 - Reaction removal semantics: see [/tools/reactions](/tools/reactions).
-- Tool gating: `channels.telegram.actions.reactions` and `channels.telegram.actions.sendMessage` (default: enabled).
+- Tool gating: `channels.telegram.actions.reactions`, `channels.telegram.actions.sendMessage`, `channels.telegram.actions.deleteMessage` (default: enabled).
 
 ## Delivery targets (CLI/cron)
 - Use a chat id (`123456789`) or a username (`@name`) as the target.
@@ -321,6 +323,7 @@ Provider options:
 - `channels.telegram.webhookPath`: local webhook path (default `/telegram-webhook`).
 - `channels.telegram.actions.reactions`: gate Telegram tool reactions.
 - `channels.telegram.actions.sendMessage`: gate Telegram tool message sends.
+- `channels.telegram.actions.deleteMessage`: gate Telegram tool message deletes.
 
 Related global options:
 - `agents.list[].groupChat.mentionPatterns` (mention gating patterns).

@@ -5,20 +5,17 @@ import { enqueueSystemEvent } from "../../../infra/system-events.js";
 
 import { resolveSlackChannelLabel } from "../channel-config.js";
 import type { SlackMonitorContext } from "../context.js";
-import type {
-  SlackChannelCreatedEvent,
-  SlackChannelRenamedEvent,
-} from "../types.js";
+import type { SlackChannelCreatedEvent, SlackChannelRenamedEvent } from "../types.js";
 
-export function registerSlackChannelEvents(params: {
-  ctx: SlackMonitorContext;
-}) {
+export function registerSlackChannelEvents(params: { ctx: SlackMonitorContext }) {
   const { ctx } = params;
 
   ctx.app.event(
     "channel_created",
-    async ({ event }: SlackEventMiddlewareArgs<"channel_created">) => {
+    async ({ event, body }: SlackEventMiddlewareArgs<"channel_created">) => {
       try {
+        if (ctx.shouldDropMismatchedSlackEvent(body)) return;
+
         const payload = event as SlackChannelCreatedEvent;
         const channelId = payload.channel?.id;
         const channelName = payload.channel?.name;
@@ -41,21 +38,20 @@ export function registerSlackChannelEvents(params: {
           contextKey: `slack:channel:created:${channelId ?? channelName ?? "unknown"}`,
         });
       } catch (err) {
-        ctx.runtime.error?.(
-          danger(`slack channel created handler failed: ${String(err)}`),
-        );
+        ctx.runtime.error?.(danger(`slack channel created handler failed: ${String(err)}`));
       }
     },
   );
 
   ctx.app.event(
     "channel_rename",
-    async ({ event }: SlackEventMiddlewareArgs<"channel_rename">) => {
+    async ({ event, body }: SlackEventMiddlewareArgs<"channel_rename">) => {
       try {
+        if (ctx.shouldDropMismatchedSlackEvent(body)) return;
+
         const payload = event as SlackChannelRenamedEvent;
         const channelId = payload.channel?.id;
-        const channelName =
-          payload.channel?.name_normalized ?? payload.channel?.name;
+        const channelName = payload.channel?.name_normalized ?? payload.channel?.name;
         if (
           !ctx.isChannelAllowed({
             channelId,
@@ -75,9 +71,7 @@ export function registerSlackChannelEvents(params: {
           contextKey: `slack:channel:renamed:${channelId ?? channelName ?? "unknown"}`,
         });
       } catch (err) {
-        ctx.runtime.error?.(
-          danger(`slack channel rename handler failed: ${String(err)}`),
-        );
+        ctx.runtime.error?.(danger(`slack channel rename handler failed: ${String(err)}`));
       }
     },
   );

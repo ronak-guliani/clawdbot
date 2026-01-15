@@ -38,10 +38,8 @@ vi.mock("./send.js", () => ({
 }));
 
 vi.mock("../pairing/pairing-store.js", () => ({
-  readChannelAllowFromStore: (...args: unknown[]) =>
-    readAllowFromStoreMock(...args),
-  upsertChannelPairingRequest: (...args: unknown[]) =>
-    upsertPairingRequestMock(...args),
+  readChannelAllowFromStore: (...args: unknown[]) => readAllowFromStoreMock(...args),
+  upsertChannelPairingRequest: (...args: unknown[]) => upsertPairingRequestMock(...args),
 }));
 
 vi.mock("../config/sessions.js", () => ({
@@ -52,8 +50,7 @@ vi.mock("../config/sessions.js", () => ({
 
 vi.mock("@slack/bolt", () => {
   const handlers = new Map<string, (args: unknown) => Promise<void>>();
-  (globalThis as { __slackHandlers?: typeof handlers }).__slackHandlers =
-    handlers;
+  (globalThis as { __slackHandlers?: typeof handlers }).__slackHandlers = handlers;
   const client = {
     auth: { test: vi.fn().mockResolvedValue({ user_id: "bot-user" }) },
     conversations: {
@@ -120,9 +117,7 @@ beforeEach(() => {
   updateLastRouteMock.mockReset();
   reactMock.mockReset();
   readAllowFromStoreMock.mockReset().mockResolvedValue([]);
-  upsertPairingRequestMock
-    .mockReset()
-    .mockResolvedValue({ code: "PAIRCODE", created: true });
+  upsertPairingRequestMock.mockReset().mockResolvedValue({ code: "PAIRCODE", created: true });
 });
 
 describe("monitorSlackProvider tool results", () => {
@@ -161,6 +156,46 @@ describe("monitorSlackProvider tool results", () => {
     expect(sendMock).toHaveBeenCalledTimes(2);
     expect(sendMock.mock.calls[0][1]).toBe("PFX tool update");
     expect(sendMock.mock.calls[1][1]).toBe("PFX final reply");
+  });
+
+  it("drops events with mismatched api_app_id", async () => {
+    const client = getSlackClient();
+    if (!client) throw new Error("Slack client not registered");
+    (client.auth as { test: ReturnType<typeof vi.fn> }).test.mockResolvedValue({
+      user_id: "bot-user",
+      team_id: "T1",
+      api_app_id: "A1",
+    });
+
+    const controller = new AbortController();
+    const run = monitorSlackProvider({
+      botToken: "bot-token",
+      appToken: "xapp-1-A1-abc",
+      abortSignal: controller.signal,
+    });
+
+    await waitForEvent("message");
+    const handler = getSlackHandlers()?.get("message");
+    if (!handler) throw new Error("Slack message handler not registered");
+
+    await handler({
+      body: { api_app_id: "A2", team_id: "T1" },
+      event: {
+        type: "message",
+        user: "U1",
+        text: "hello",
+        ts: "123",
+        channel: "C1",
+        channel_type: "im",
+      },
+    });
+
+    await flush();
+    controller.abort();
+    await run;
+
+    expect(sendMock).not.toHaveBeenCalled();
+    expect(replyMock).not.toHaveBeenCalled();
   });
 
   it("does not derive responsePrefix from routed agent identity when unset", async () => {
@@ -241,8 +276,7 @@ describe("monitorSlackProvider tool results", () => {
       },
     };
 
-    let capturedCtx: { Body?: string; RawBody?: string; CommandBody?: string } =
-      {};
+    let capturedCtx: { Body?: string; RawBody?: string; CommandBody?: string } = {};
     replyMock.mockImplementation(async (ctx) => {
       capturedCtx = ctx ?? {};
       return undefined;

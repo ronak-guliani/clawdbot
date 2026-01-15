@@ -1,4 +1,4 @@
-import { chunkMarkdownText } from "../../../auto-reply/chunk.js";
+import { markdownToTelegramHtmlChunks } from "../../../telegram/format.js";
 import { sendMessageTelegram } from "../../../telegram/send.js";
 import type { ChannelOutboundAdapter } from "../types.js";
 
@@ -10,7 +10,7 @@ function parseReplyToMessageId(replyToId?: string | null) {
 
 export const telegramOutbound: ChannelOutboundAdapter = {
   deliveryMode: "direct",
-  chunker: chunkMarkdownText,
+  chunker: markdownToTelegramHtmlChunks,
   textChunkLimit: 4000,
   resolveTarget: ({ to }) => {
     const trimmed = to?.trim();
@@ -27,26 +27,20 @@ export const telegramOutbound: ChannelOutboundAdapter = {
     const replyToMessageId = parseReplyToMessageId(replyToId);
     const result = await send(to, text, {
       verbose: false,
+      textMode: "html",
       messageThreadId: threadId ?? undefined,
       replyToMessageId,
       accountId: accountId ?? undefined,
     });
     return { channel: "telegram", ...result };
   },
-  sendMedia: async ({
-    to,
-    text,
-    mediaUrl,
-    accountId,
-    deps,
-    replyToId,
-    threadId,
-  }) => {
+  sendMedia: async ({ to, text, mediaUrl, accountId, deps, replyToId, threadId }) => {
     const send = deps?.sendTelegram ?? sendMessageTelegram;
     const replyToMessageId = parseReplyToMessageId(replyToId);
     const result = await send(to, text, {
       verbose: false,
       mediaUrl,
+      textMode: "html",
       messageThreadId: threadId ?? undefined,
       replyToMessageId,
       accountId: accountId ?? undefined,

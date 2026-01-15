@@ -22,15 +22,13 @@ vi.mock("../config/config.js", async (importOriginal) => {
   };
 });
 
-const { readTelegramAllowFromStore, upsertTelegramPairingRequest } = vi.hoisted(
-  () => ({
-    readTelegramAllowFromStore: vi.fn(async () => [] as string[]),
-    upsertTelegramPairingRequest: vi.fn(async () => ({
-      code: "PAIRCODE",
-      created: true,
-    })),
-  }),
-);
+const { readTelegramAllowFromStore, upsertTelegramPairingRequest } = vi.hoisted(() => ({
+  readTelegramAllowFromStore: vi.fn(async () => [] as string[]),
+  upsertTelegramPairingRequest: vi.fn(async () => ({
+    code: "PAIRCODE",
+    created: true,
+  })),
+}));
 
 vi.mock("./pairing-store.js", () => ({
   readTelegramAllowFromStore,
@@ -80,7 +78,9 @@ vi.mock("grammy", () => ({
     command = commandSpy;
     constructor(
       public token: string,
-      public options?: { client?: { fetch?: typeof fetch } },
+      public options?: {
+        client?: { fetch?: typeof fetch; timeoutSeconds?: number };
+      },
     ) {
       botCtorSpy(token, options);
     }
@@ -195,16 +195,47 @@ describe("createTelegramBot", () => {
       }
     }
   });
+  it("passes timeoutSeconds even without a custom fetch", () => {
+    loadConfig.mockReturnValue({
+      channels: {
+        telegram: { dmPolicy: "open", allowFrom: ["*"], timeoutSeconds: 60 },
+      },
+    });
+    createTelegramBot({ token: "tok" });
+    expect(botCtorSpy).toHaveBeenCalledWith(
+      "tok",
+      expect.objectContaining({
+        client: expect.objectContaining({ timeoutSeconds: 60 }),
+      }),
+    );
+  });
+  it("prefers per-account timeoutSeconds overrides", () => {
+    loadConfig.mockReturnValue({
+      channels: {
+        telegram: {
+          dmPolicy: "open",
+          allowFrom: ["*"],
+          timeoutSeconds: 60,
+          accounts: {
+            foo: { timeoutSeconds: 61 },
+          },
+        },
+      },
+    });
+    createTelegramBot({ token: "tok", accountId: "foo" });
+    expect(botCtorSpy).toHaveBeenCalledWith(
+      "tok",
+      expect.objectContaining({
+        client: expect.objectContaining({ timeoutSeconds: 61 }),
+      }),
+    );
+  });
   it("sequentializes updates by chat and thread", () => {
     createTelegramBot({ token: "tok" });
     expect(sequentializeSpy).toHaveBeenCalledTimes(1);
-    expect(middlewareUseSpy).toHaveBeenCalledWith(
-      sequentializeSpy.mock.results[0]?.value,
-    );
+    expect(middlewareUseSpy).toHaveBeenCalledWith(sequentializeSpy.mock.results[0]?.value);
     expect(sequentializeKey).toBe(getTelegramSequentialKey);
-    expect(getTelegramSequentialKey({ message: { chat: { id: 123 } } })).toBe(
-      "telegram:123",
-    );
+    expect(getTelegramSequentialKey({ message: { chat: { id: 123 } } })).toBe("telegram:123");
     expect(
       getTelegramSequentialKey({
         message: { chat: { id: 123 }, message_thread_id: 9 },
@@ -223,15 +254,13 @@ describe("createTelegramBot", () => {
   });
   it("routes callback_query payloads as messages and answers callbacks", async () => {
     onSpy.mockReset();
-    const replySpy = replyModule.__replySpy as unknown as ReturnType<
-      typeof vi.fn
-    >;
+    const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
     replySpy.mockReset();
 
     createTelegramBot({ token: "tok" });
-    const callbackHandler = onSpy.mock.calls.find(
-      (call) => call[0] === "callback_query",
-    )?.[1] as (ctx: Record<string, unknown>) => Promise<void>;
+    const callbackHandler = onSpy.mock.calls.find((call) => call[0] === "callback_query")?.[1] as (
+      ctx: Record<string, unknown>,
+    ) => Promise<void>;
     expect(callbackHandler).toBeDefined();
 
     await callbackHandler({
@@ -260,16 +289,12 @@ describe("createTelegramBot", () => {
 
     try {
       onSpy.mockReset();
-      const replySpy = replyModule.__replySpy as unknown as ReturnType<
-        typeof vi.fn
-      >;
+      const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
       replySpy.mockReset();
 
       createTelegramBot({ token: "tok" });
       expect(onSpy).toHaveBeenCalledWith("message", expect.any(Function));
-      const handler = getOnHandler("message") as (
-        ctx: Record<string, unknown>,
-      ) => Promise<void>;
+      const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
 
       const message = {
         chat: { id: 1234, type: "private" },
@@ -300,9 +325,7 @@ describe("createTelegramBot", () => {
   it("requests pairing by default for unknown DM senders", async () => {
     onSpy.mockReset();
     sendMessageSpy.mockReset();
-    const replySpy = replyModule.__replySpy as unknown as ReturnType<
-      typeof vi.fn
-    >;
+    const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
     replySpy.mockReset();
 
     loadConfig.mockReturnValue({
@@ -315,9 +338,7 @@ describe("createTelegramBot", () => {
     });
 
     createTelegramBot({ token: "tok" });
-    const handler = getOnHandler("message") as (
-      ctx: Record<string, unknown>,
-    ) => Promise<void>;
+    const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
 
     await handler({
       message: {
@@ -333,20 +354,14 @@ describe("createTelegramBot", () => {
     expect(replySpy).not.toHaveBeenCalled();
     expect(sendMessageSpy).toHaveBeenCalledTimes(1);
     expect(sendMessageSpy.mock.calls[0]?.[0]).toBe(1234);
-    expect(String(sendMessageSpy.mock.calls[0]?.[1])).toContain(
-      "Your Telegram user id: 999",
-    );
-    expect(String(sendMessageSpy.mock.calls[0]?.[1])).toContain(
-      "Pairing code:",
-    );
+    expect(String(sendMessageSpy.mock.calls[0]?.[1])).toContain("Your Telegram user id: 999");
+    expect(String(sendMessageSpy.mock.calls[0]?.[1])).toContain("Pairing code:");
     expect(String(sendMessageSpy.mock.calls[0]?.[1])).toContain("PAIRME12");
   });
   it("does not resend pairing code when a request is already pending", async () => {
     onSpy.mockReset();
     sendMessageSpy.mockReset();
-    const replySpy = replyModule.__replySpy as unknown as ReturnType<
-      typeof vi.fn
-    >;
+    const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
     replySpy.mockReset();
 
     loadConfig.mockReturnValue({
@@ -358,9 +373,7 @@ describe("createTelegramBot", () => {
       .mockResolvedValueOnce({ code: "PAIRME12", created: false });
 
     createTelegramBot({ token: "tok" });
-    const handler = getOnHandler("message") as (
-      ctx: Record<string, unknown>,
-    ) => Promise<void>;
+    const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
 
     const message = {
       chat: { id: 1234, type: "private" },
@@ -388,9 +401,7 @@ describe("createTelegramBot", () => {
     sendChatActionSpy.mockReset();
 
     createTelegramBot({ token: "tok" });
-    const handler = getOnHandler("message") as (
-      ctx: Record<string, unknown>,
-    ) => Promise<void>;
+    const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
     await handler({
       message: { chat: { id: 42, type: "private" }, text: "hi" },
       me: { username: "clawdbot_bot" },
