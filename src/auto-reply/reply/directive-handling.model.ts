@@ -84,7 +84,11 @@ function buildModelPickerCatalog(params: {
     });
   }
 
-  return out;
+  return out.sort((a, b) => {
+    const p = a.provider.localeCompare(b.provider);
+    if (p !== 0) return p;
+    return a.id.localeCompare(b.id);
+  });
 }
 
 export async function maybeHandleModelDirectiveInfo(params: {
@@ -104,8 +108,8 @@ export async function maybeHandleModelDirectiveInfo(params: {
 
   const rawDirective = params.directives.rawModelDirective?.trim();
   const directive = rawDirective?.toLowerCase();
-  const wantsStatus = directive === "status";
-  const wantsList = !rawDirective || directive === "list";
+  const wantsStatus = !rawDirective || directive === "status";
+  const wantsList = directive === "list" || directive === "compact";
   if (!wantsList && !wantsStatus) return undefined;
 
   if (params.directives.rawModelProfile) {
@@ -124,11 +128,14 @@ export async function maybeHandleModelDirectiveInfo(params: {
     const items = buildModelPickerItems(pickerCatalog);
     if (items.length === 0) return { text: "No models available." };
     const current = `${params.provider}/${params.model}`;
-    const lines: string[] = [`Current: ${current}`, "Pick: /model <#> or /model <provider/model>"];
+    const lines: string[] = [
+      `Current: ${current}`,
+      "Pick: /model <#> (chooses provider automatically)",
+    ];
     for (const [idx, item] of items.entries()) {
       lines.push(`${idx + 1}) ${item.model} — ${item.providers.join(", ")}`);
     }
-    lines.push("", "More: /model status");
+    lines.push("", "Full: /model");
     return { text: lines.join("\n") };
   }
 
@@ -174,6 +181,7 @@ export async function maybeHandleModelDirectiveInfo(params: {
     byProvider.set(provider, [entry]);
   }
 
+  let globalIdx = 1;
   for (const provider of byProvider.keys()) {
     const models = byProvider.get(provider);
     if (!models) continue;
@@ -188,8 +196,10 @@ export async function maybeHandleModelDirectiveInfo(params: {
     for (const entry of models) {
       const label = `${provider}/${entry.id}`;
       const aliases = params.aliasIndex.byKey.get(label);
-      const aliasSuffix = aliases && aliases.length > 0 ? ` (${aliases.join(", ")})` : "";
-      lines.push(`  • ${label}${aliasSuffix}`);
+      const aliasSuffix =
+        aliases && aliases.length > 0 ? ` (${aliases.join(", ")})` : "";
+      lines.push(`${globalIdx}) ${label}${aliasSuffix}`);
+      globalIdx++;
     }
   }
   return { text: lines.join("\n") };
@@ -210,7 +220,10 @@ export function resolveModelSelectionFromDirective(params: {
   profileOverride?: string;
   errorText?: string;
 } {
-  if (!params.directives.hasModelDirective || !params.directives.rawModelDirective) {
+  if (
+    !params.directives.hasModelDirective ||
+    !params.directives.rawModelDirective
+  ) {
     if (params.directives.rawModelProfile) {
       return { errorText: "Auth profile override requires a model selection." };
     }
@@ -228,30 +241,28 @@ export function resolveModelSelectionFromDirective(params: {
       aliasIndex: params.aliasIndex,
       allowedModelCatalog: params.allowedModelCatalog,
     });
-    const items = buildModelPickerItems(pickerCatalog);
+
     const index = Number.parseInt(raw, 10) - 1;
-    const item = Number.isFinite(index) ? items[index] : undefined;
+    const item =
+      Number.isFinite(index) && index >= 0 && index < pickerCatalog.length
+        ? pickerCatalog[index]
+        : undefined;
+
     if (!item) {
       return {
         errorText: `Invalid model selection "${raw}". Use /model to list.`,
       };
     }
-    const picked = pickProviderForModel({
-      item,
-      preferredProvider: params.provider,
-    });
-    if (!picked) {
-      return {
-        errorText: `Invalid model selection "${raw}". Use /model to list.`,
-      };
-    }
-    const key = `${picked.provider}/${picked.model}`;
+
+    const key = `${item.provider}/${item.id}`;
     const aliases = params.aliasIndex.byKey.get(key);
     const alias = aliases && aliases.length > 0 ? aliases[0] : undefined;
     modelSelection = {
-      provider: picked.provider,
-      model: picked.model,
-      isDefault: picked.provider === params.defaultProvider && picked.model === params.defaultModel,
+      provider: item.provider,
+      model: item.id,
+      isDefault:
+        item.provider === params.defaultProvider &&
+        item.id === params.defaultModel,
       ...(alias ? { alias } : {}),
     };
   } else {
